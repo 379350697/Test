@@ -1,0 +1,10 @@
+name: quantx-batch
+description: Parallel N strategy × M symbol × K timeframe batch backtest via ProcessPoolExecutor.
+entrypoint: quantx batch
+args:
+  file: data csv path
+  strategies: json list
+  symbols: json list
+  timeframes: json list
+  workers: cpu workers
+  json: true

@@ -1,0 +1,8 @@
+name: quantx-backtest
+description: Run a single strategy backtest and output report paths.
+entrypoint: quantx backtest
+args:
+  file: data csv path
+  strategy: one of built-in strategies
+  params: json dict
+  json: true

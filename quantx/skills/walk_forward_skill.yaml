@@ -1,0 +1,9 @@
+name: quantx-walk-forward
+description: Walk-forward rolling train/test validation.
+entrypoint: quantx walk-forward
+args:
+  file: data csv path
+  strategy: strategy name
+  params: json dict
+  splits: integer
+  json: true

@@ -1,0 +1,8 @@
+[project]
+name = "quantx"
+version = "0.1.0"
+description = "Quant trading system for crypto exchanges"
+requires-python = ">=3.10"
+
+[project.scripts]
+quantx = "quantx.cli:main"
