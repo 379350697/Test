@@ -37,7 +37,7 @@ class Position:
 @dataclass(slots=True)
 class RiskConfig:
     max_position_pct: float = 0.3
-    max_drawdown_pct: float = 0.25
+    max_drawdown_pct: float = 0.40
     cooldown_bars: int = 0
     max_orders_per_day: int = 30
 
