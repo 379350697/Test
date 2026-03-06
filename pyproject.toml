@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "quantx"
 version = "0.1.0"
@@ -6,3 +10,11 @@ requires-python = ">=3.10"
 
 [project.scripts]
 quantx = "quantx.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quantx*"]
+exclude = ["tests*", "src*"]
