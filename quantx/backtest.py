@@ -53,12 +53,31 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
     peak_eq = cash
     orders_per_day = defaultdict(int)
     last_trade_idx: int | None = None
+    closed_pnls: list[float] = []
+    entry_idx: int | None = None
+    peak_price_since_entry: float = 0.0
+    trough_price_since_entry: float = 0.0
 
     for i in range(len(candles) - 1):
         c = candles[i]
         nxt = candles[i + 1]
         signal = strategy.signal(candles, i)
         day_key = c.ts.date().isoformat()
+
+        # shared ATR (used by exits and position sizing)
+        atr_val = 0.0
+        atr_period = int(strategy_params.get("atr_period", 14) or 14)
+        if i >= atr_period:
+            trs = []
+            for k in range(i - atr_period + 1, i + 1):
+                prev_close = candles[k - 1].close if k > 0 else candles[k].close
+                tr = max(
+                    candles[k].high - candles[k].low,
+                    abs(candles[k].high - prev_close),
+                    abs(candles[k].low - prev_close),
+                )
+                trs.append(tr)
+            atr_val = mean(trs) if trs else 0.0
 
         mark = cash + pos.qty * c.close
         peak_eq = max(peak_eq, mark)
@@ -67,48 +86,241 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
         drawdown_curve.append((c.ts, dd))
 
         if abs(dd) >= config.risk.max_drawdown_pct:
-            if pos.qty > 0:
-                px = nxt.open * (1 - config.slippage_pct)
-                fee = pos.qty * px * config.fee_rate
-                cash += pos.qty * px - fee
-                trades.append(Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, "max_drawdown_stop"))
+            if pos.qty != 0:
+                if pos.qty > 0:
+                    px = nxt.open * (1 - config.slippage_pct)
+                    fee = pos.qty * px * config.fee_rate
+                    realized = (px - pos.avg_price) * pos.qty - fee
+                    closed_pnls.append(realized)
+                    cash += pos.qty * px - fee
+                    trades.append(Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, "max_drawdown_stop"))
+                else:
+                    qty_abs = abs(pos.qty)
+                    px = nxt.open * (1 + config.slippage_pct)
+                    fee = qty_abs * px * config.fee_rate
+                    realized = (pos.avg_price - px) * qty_abs - fee
+                    closed_pnls.append(realized)
+                    cash -= qty_abs * px + fee
+                    trades.append(Trade(nxt.ts, config.symbol, "BUY", qty_abs, px, fee, "max_drawdown_stop"))
                 pos.qty = 0
+                pos.avg_price = 0.0
+                entry_idx = None
+                peak_price_since_entry = 0.0
+                trough_price_since_entry = 0.0
             break
+
+        # per-trade risk exits (optional, strategy param driven)
+        if pos.qty != 0:
+            stop_atr_mult = float(strategy_params.get("stop_atr_mult", 0) or 0)
+            trail_atr_mult = float(strategy_params.get("trail_atr_mult", 0) or 0)
+            max_hold_bars = int(strategy_params.get("max_hold_bars", 0) or 0)
+
+            peak_price_since_entry = max(peak_price_since_entry, c.high) if pos.qty > 0 else peak_price_since_entry
+            trough_price_since_entry = min(trough_price_since_entry, c.low) if pos.qty < 0 else trough_price_since_entry
+            bars_held = (i - entry_idx) if entry_idx is not None else 0
+
+            if pos.qty > 0:
+                hit_stop = stop_atr_mult > 0 and atr_val > 0 and c.close <= (pos.avg_price - stop_atr_mult * atr_val)
+                hit_trail = trail_atr_mult > 0 and atr_val > 0 and c.close <= (peak_price_since_entry - trail_atr_mult * atr_val)
+            else:
+                hit_stop = stop_atr_mult > 0 and atr_val > 0 and c.close >= (pos.avg_price + stop_atr_mult * atr_val)
+                hit_trail = trail_atr_mult > 0 and atr_val > 0 and c.close >= (trough_price_since_entry + trail_atr_mult * atr_val)
+
+            donchian_exit_lookback = int(strategy_params.get("donchian_exit_lookback", 0) or 0)
+            hit_donchian = False
+            if donchian_exit_lookback > 1 and i >= donchian_exit_lookback:
+                win = candles[i - donchian_exit_lookback + 1 : i + 1]
+                low_n = min(x.low for x in win)
+                high_n = max(x.high for x in win)
+                if pos.qty > 0:
+                    hit_donchian = c.close < low_n
+                else:
+                    hit_donchian = c.close > high_n
+
+            hit_time = max_hold_bars > 0 and bars_held >= max_hold_bars
+
+            if hit_stop or hit_trail or hit_donchian or hit_time:
+                reason = "stop_loss" if hit_stop else ("trailing_stop" if hit_trail else ("donchian_exit" if hit_donchian else "time_stop"))
+                if pos.qty > 0:
+                    px = nxt.open * (1 - config.slippage_pct)
+                    fee = pos.qty * px * config.fee_rate
+                    realized = (px - pos.avg_price) * pos.qty - fee
+                    closed_pnls.append(realized)
+                    cash += pos.qty * px - fee
+                    trades.append(Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, reason))
+                else:
+                    qty_abs = abs(pos.qty)
+                    px = nxt.open * (1 + config.slippage_pct)
+                    fee = qty_abs * px * config.fee_rate
+                    realized = (pos.avg_price - px) * qty_abs - fee
+                    closed_pnls.append(realized)
+                    cash -= qty_abs * px + fee
+                    trades.append(Trade(nxt.ts, config.symbol, "BUY", qty_abs, px, fee, reason))
+                pos.qty = 0
+                pos.avg_price = 0.0
+                entry_idx = None
+                peak_price_since_entry = 0.0
+                trough_price_since_entry = 0.0
+                last_trade_idx = i
+                orders_per_day[day_key] += 1
+                continue
 
         if orders_per_day[day_key] >= config.risk.max_orders_per_day:
             continue
 
-        if signal > 0:
-            position_value = pos.qty * c.close
-            if position_value / max(mark, 1e-9) >= config.risk.max_position_pct:
-                continue
-            if last_trade_idx is not None and (i - last_trade_idx) < config.risk.cooldown_bars:
-                continue
-            buy_cash = cash * 0.2
-            if strategy_name == "dca":
-                buy_cash = min(cash, float(strategy_params.get("buy_amount_usdt", 100)))
-            if buy_cash <= 0:
-                continue
-            px = nxt.open * (1 + config.slippage_pct)
-            qty = buy_cash / px
-            fee = qty * px * config.fee_rate
-            cash -= qty * px + fee
-            pos.qty += qty
-            pos.avg_price = px if pos.avg_price == 0 else (pos.avg_price + px) / 2
-            pos.last_trade_ts = c.ts
-            last_trade_idx = i
-            orders_per_day[day_key] += 1
-            trades.append(Trade(nxt.ts, config.symbol, "BUY", qty, px, fee, f"signal:{signal}"))
+        if signal != 0:
+            # short-open gate: BTC/ETH long-only; altcoins allow short with filters
+            allow_short_open = True
+            if config.symbol.upper() in {"BTCUSDT", "ETHUSDT"}:
+                allow_short_open = False
+            else:
+                short_adx_filter = float(strategy_params.get("short_adx_filter", 0) or 0)
+                short_ma_period = int(strategy_params.get("short_ma_period", 200) or 200)
+                require_price_below_ma = bool(strategy_params.get("short_require_price_below_ma", True))
 
-        elif signal < 0 and pos.qty > 0:
-            px = nxt.open * (1 - config.slippage_pct)
-            fee = pos.qty * px * config.fee_rate
-            cash += pos.qty * px - fee
-            trades.append(Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, f"signal:{signal}"))
-            pos.qty = 0
-            pos.last_trade_ts = c.ts
-            last_trade_idx = i
-            orders_per_day[day_key] += 1
+                cond_adx = False
+                if short_adx_filter > 0 and i >= atr_period + 1:
+                    trs, pdms, ndms = [], [], []
+                    p = int(strategy_params.get("adx_period", 14) or 14)
+                    if i >= p + 1:
+                        for k in range(i - p + 1, i + 1):
+                            cur = candles[k]
+                            prev = candles[k - 1]
+                            up_move = cur.high - prev.high
+                            down_move = prev.low - cur.low
+                            pdm = up_move if (up_move > down_move and up_move > 0) else 0.0
+                            ndm = down_move if (down_move > up_move and down_move > 0) else 0.0
+                            tr = max(cur.high - cur.low, abs(cur.high - prev.close), abs(cur.low - prev.close))
+                            trs.append(tr)
+                            pdms.append(pdm)
+                            ndms.append(ndm)
+                        atr_adx = mean(trs) if trs else 0.0
+                        if atr_adx > 1e-12:
+                            pdi = 100.0 * (mean(pdms) / atr_adx)
+                            ndi = 100.0 * (mean(ndms) / atr_adx)
+                            denom = pdi + ndi
+                            adx_val = 100.0 * abs(pdi - ndi) / denom if denom > 1e-12 else 0.0
+                            cond_adx = adx_val > short_adx_filter
+
+                cond_ma = False
+                if require_price_below_ma and i >= short_ma_period:
+                    ma = mean([x.close for x in candles[i - short_ma_period + 1 : i + 1]])
+                    cond_ma = c.close < ma
+
+                # OR condition: ADX > gate OR price < MA200
+                allow_short_open = cond_adx or cond_ma
+
+            # close opposite side first (for true long/short switching)
+            if signal > 0 and pos.qty < 0:
+                qty_abs = abs(pos.qty)
+                px = nxt.open * (1 + config.slippage_pct)
+                fee = qty_abs * px * config.fee_rate
+                realized = (pos.avg_price - px) * qty_abs - fee
+                closed_pnls.append(realized)
+                cash -= qty_abs * px + fee
+                trades.append(Trade(nxt.ts, config.symbol, "BUY", qty_abs, px, fee, f"signal:{signal}"))
+                pos.qty = 0
+                pos.avg_price = 0.0
+                entry_idx = None
+                peak_price_since_entry = 0.0
+                trough_price_since_entry = 0.0
+                last_trade_idx = i
+                orders_per_day[day_key] += 1
+                continue
+            if signal < 0 and pos.qty > 0:
+                px = nxt.open * (1 - config.slippage_pct)
+                fee = pos.qty * px * config.fee_rate
+                realized = (px - pos.avg_price) * pos.qty - fee
+                closed_pnls.append(realized)
+                cash += pos.qty * px - fee
+                trades.append(Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, f"signal:{signal}"))
+                pos.qty = 0
+                pos.avg_price = 0.0
+                entry_idx = None
+                peak_price_since_entry = 0.0
+                trough_price_since_entry = 0.0
+                last_trade_idx = i
+                orders_per_day[day_key] += 1
+                continue
+
+            # open side if flat
+            if pos.qty == 0:
+                if signal < 0 and not allow_short_open:
+                    continue
+                if last_trade_idx is not None and (i - last_trade_idx) < config.risk.cooldown_bars:
+                    continue
+
+                open_cash = cash * 0.2
+                if strategy_name == "dca" and signal > 0:
+                    open_cash = min(cash, float(strategy_params.get("buy_amount_usdt", 100)))
+
+                risk_per_trade = float(strategy_params.get("risk_per_trade", 0) or 0)
+                stop_atr_mult = float(strategy_params.get("stop_atr_mult", 0) or 0)
+                max_position_pct = float(strategy_params.get("max_position_pct", 0) or 0)
+                atr_floor_mult = float(strategy_params.get("atr_floor_mult", 0) or 0)
+                atr_ma_period = int(strategy_params.get("atr_ma_period", 50) or 50)
+                if risk_per_trade > 0 and stop_atr_mult > 0 and atr_val > 0:
+                    atr_eff = atr_val
+                    if atr_floor_mult > 0:
+                        atr_hist = []
+                        for k in range(i - atr_ma_period + 1, i + 1):
+                            if k < 0:
+                                continue
+                            trs2 = []
+                            if k >= atr_period:
+                                for kk in range(k - atr_period + 1, k + 1):
+                                    prev_close2 = candles[kk - 1].close if kk > 0 else candles[kk].close
+                                    tr2 = max(
+                                        candles[kk].high - candles[kk].low,
+                                        abs(candles[kk].high - prev_close2),
+                                        abs(candles[kk].low - prev_close2),
+                                    )
+                                    trs2.append(tr2)
+                            if trs2:
+                                atr_hist.append(mean(trs2))
+                        if atr_hist:
+                            atr_ma = mean(atr_hist)
+                            atr_floor = atr_ma * atr_floor_mult
+                            atr_eff = max(atr_eff, atr_floor)
+
+                    risk_amount = max(mark, 0.0) * risk_per_trade
+                    qty_risk = risk_amount / max(1e-12, (atr_eff * stop_atr_mult))
+                    px_est = nxt.open * (1 + config.slippage_pct if signal > 0 else 1 - config.slippage_pct)
+                    open_cash_risk = qty_risk * px_est
+                    if max_position_pct > 0:
+                        open_cash_cap = max(mark, 0.0) * max_position_pct
+                        open_cash = min(cash, open_cash_risk, open_cash_cap)
+                    else:
+                        open_cash = min(cash, open_cash_risk)
+
+                if open_cash <= 0:
+                    continue
+
+                if signal > 0:
+                    px = nxt.open * (1 + config.slippage_pct)
+                    qty = open_cash / px
+                    fee = qty * px * config.fee_rate
+                    cash -= qty * px + fee
+                    pos.qty = qty
+                    pos.avg_price = px
+                    trades.append(Trade(nxt.ts, config.symbol, "BUY", qty, px, fee, f"signal:{signal}"))
+                    peak_price_since_entry = c.high
+                    trough_price_since_entry = c.low
+                else:
+                    px = nxt.open * (1 - config.slippage_pct)
+                    qty = open_cash / px
+                    fee = qty * px * config.fee_rate
+                    cash += qty * px - fee
+                    pos.qty = -qty
+                    pos.avg_price = px
+                    trades.append(Trade(nxt.ts, config.symbol, "SELL", qty, px, fee, f"signal:{signal}"))
+                    peak_price_since_entry = c.high
+                    trough_price_since_entry = c.low
+
+                pos.last_trade_ts = c.ts
+                entry_idx = i
+                last_trade_idx = i
+                orders_per_day[day_key] += 1
 
     if candles:
         end_equity = cash + pos.qty * candles[-1].close
@@ -119,7 +331,8 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
     vol = (sum((r - avg_ret) ** 2 for r in rets) / max(1, len(rets))) ** 0.5
     sharpe = (avg_ret / vol * sqrt(252)) if vol > 0 else 0.0
     pnl = eq_values[-1] - config.initial_cash
-    win = sum(1 for t in trades if t.side == "SELL" and t.reason.startswith("signal"))
+    closed_trades = [x for x in closed_pnls]
+    win_rate = (sum(1 for x in closed_trades if x > 0) / len(closed_trades)) if closed_trades else 0.0
     fee_paid = sum(t.fee for t in trades)
 
     metrics = {
@@ -128,7 +341,7 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
         "max_drawdown_pct": _max_drawdown(eq_values) * 100,
         "sharpe": sharpe,
         "trades": float(len(trades)),
-        "win_rate": win / max(1, len([t for t in trades if t.side == "SELL"])),
+        "win_rate": win_rate,
         "fee_paid": fee_paid,
         "fee_ratio": fee_paid / max(1e-9, abs(pnl) + 1),
     }

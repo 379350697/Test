@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from statistics import mean, pstdev
+import math
 from typing import Any
 
 from .models import Candle
@@ -79,6 +80,116 @@ def rsi(values: list[float], period: int = 14) -> float | None:
     return 100 - (100 / (1 + rs))
 
 
+def adx(candles: list[Candle], i: int, period: int = 14) -> float | None:
+    if i < period + 1:
+        return None
+    trs, pdms, ndms = [], [], []
+    for k in range(i - period + 1, i + 1):
+        cur = candles[k]
+        prev = candles[k - 1]
+        up_move = cur.high - prev.high
+        down_move = prev.low - cur.low
+        pdm = up_move if (up_move > down_move and up_move > 0) else 0.0
+        ndm = down_move if (down_move > up_move and down_move > 0) else 0.0
+        tr = max(cur.high - cur.low, abs(cur.high - prev.close), abs(cur.low - prev.close))
+        trs.append(tr)
+        pdms.append(pdm)
+        ndms.append(ndm)
+    atr = mean(trs) if trs else 0.0
+    if atr <= 1e-12:
+        return 0.0
+    pdi = 100.0 * (mean(pdms) / atr)
+    ndi = 100.0 * (mean(ndms) / atr)
+    denom = pdi + ndi
+    if denom <= 1e-12:
+        return 0.0
+    dx = 100.0 * abs(pdi - ndi) / denom
+    return dx
+
+
+def realized_vol(closes: list[float], window: int = 20) -> float | None:
+    if len(closes) < window + 1:
+        return None
+    rets = []
+    seg = closes[-(window + 1) :]
+    for a, b in zip(seg[:-1], seg[1:]):
+        if a <= 0:
+            continue
+        rets.append(math.log(b / a))
+    if len(rets) < 2:
+        return None
+    mu = mean(rets)
+    var = mean([(r - mu) ** 2 for r in rets])
+    return math.sqrt(max(var, 0.0))
+
+
+def _atr(candles: list[Candle], i: int, period: int = 14) -> float | None:
+    if i < period:
+        return None
+    trs = []
+    for k in range(i - period + 1, i + 1):
+        prev_close = candles[k - 1].close if k > 0 else candles[k].close
+        tr = max(
+            candles[k].high - candles[k].low,
+            abs(candles[k].high - prev_close),
+            abs(candles[k].low - prev_close),
+        )
+        trs.append(tr)
+    return mean(trs) if trs else None
+
+
+def pass_common_filters(candles: list[Candle], i: int, params: dict[str, Any]) -> bool:
+    adx_gate = float(params.get("adx_filter", 0) or 0)
+    if adx_gate > 0:
+        av = adx(candles, i, int(params.get("adx_period", 14) or 14))
+        if av is None or av < adx_gate:
+            return False
+
+    closes = [c.close for c in candles[: i + 1]]
+    vol = realized_vol(closes, int(params.get("vol_window", 20) or 20))
+    min_vol = float(params.get("min_vol", 0) or 0)
+    max_vol = float(params.get("max_vol", 0) or 0)
+    if vol is not None:
+        if min_vol > 0 and vol < min_vol:
+            return False
+        if max_vol > 0 and vol > max_vol:
+            return False
+
+    # volatility expansion filter: ATR > ATR_MA
+    cur_atr = None
+    if bool(params.get("atr_expansion", False)):
+        atr_p = int(params.get("atr_period", 14) or 14)
+        atr_ma_p = int(params.get("atr_ma_period", 50) or 50)
+        cur_atr = _atr(candles, i, atr_p)
+        if cur_atr is None:
+            return False
+        atr_hist = []
+        for k in range(i - atr_ma_p + 1, i + 1):
+            if k < 0:
+                continue
+            v = _atr(candles, k, atr_p)
+            if v is not None:
+                atr_hist.append(v)
+        if len(atr_hist) < max(5, atr_ma_p // 2):
+            return False
+        atr_ma = mean(atr_hist)
+        if cur_atr <= atr_ma:
+            return False
+
+    # ATR/price threshold (volatility breakout strength)
+    atr_price_threshold = float(params.get("atr_price_threshold", 0) or 0)
+    if atr_price_threshold > 0:
+        if cur_atr is None:
+            atr_p = int(params.get("atr_period", 14) or 14)
+            cur_atr = _atr(candles, i, atr_p)
+        if cur_atr is None or candles[i].close <= 0:
+            return False
+        if (cur_atr / candles[i].close) <= atr_price_threshold:
+            return False
+
+    return True
+
+
 class DcaStrategy(BaseStrategy):
     name = "dca"
     category = "passive"
@@ -111,7 +222,10 @@ class MaCrossoverStrategy(BaseStrategy):
         s = fn(closes, slow_p)
         if f is None or s is None:
             return 0
-        return 1 if f > s else -1
+        sig = 1 if f > s else -1
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return sig
 
 
 class MacdStrategy(BaseStrategy):
@@ -142,7 +256,10 @@ class MacdStrategy(BaseStrategy):
         signal_line = ema(macd_series, sig)
         if signal_line is None:
             return 0
-        return 1 if macd_series[-1] > signal_line else -1
+        sig = 1 if macd_series[-1] > signal_line else -1
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return sig
 
 
 class BreakoutStrategy(BaseStrategy):
@@ -161,11 +278,16 @@ class BreakoutStrategy(BaseStrategy):
         hi = max(c.high for c in chunk)
         lo = min(c.low for c in chunk)
         px = candles[i].close
+        sig = 0
         if px > hi:
-            return 1
-        if px < lo:
-            return -1
-        return 0
+            sig = 1
+        elif px < lo:
+            sig = -1
+        if sig == 0:
+            return 0
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return sig
 
 
 class RsiReversalStrategy(BaseStrategy):
@@ -184,11 +306,16 @@ class RsiReversalStrategy(BaseStrategy):
         rv = rsi(closes, period)
         if rv is None:
             return 0
+        sig = 0
         if rv < oversold:
-            return 1
-        if rv > overbought:
-            return -1
-        return 0
+            sig = 1
+        elif rv > overbought:
+            sig = -1
+        if sig == 0:
+            return 0
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return sig
 
 
 class BollingerBandsStrategy(BaseStrategy):
@@ -210,11 +337,16 @@ class BollingerBandsStrategy(BaseStrategy):
         up = m + std * sd
         dn = m - std * sd
         c = closes[-1]
+        sig = 0
         if c < dn:
-            return 1
-        if c > up:
-            return -1
-        return 0
+            sig = 1
+        elif c > up:
+            sig = -1
+        if sig == 0:
+            return 0
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return sig
 
 
 class GridStrategy(BaseStrategy):
