@@ -263,10 +263,10 @@ class MacdStrategy(BaseStrategy):
 
 
 class BreakoutStrategy(BaseStrategy):
-    name = "breakout"
+    name = "cta_strategy"
     category = "trend"
     author = "quantx"
-    description = "唐奇安通道突破"
+    description = "CTA趋势策略（原Breakout/Donchian）"
     default_params = {"lookback": 20}
     tags = ["breakout", "trend"]
 
@@ -373,6 +373,73 @@ class GridStrategy(BaseStrategy):
         return 0
 
 
+class TsmomStrategy(BaseStrategy):
+    name = "tsmom"
+    category = "trend"
+    author = "quantx"
+    description = "Time-Series Momentum（时序动量）"
+    default_params = {"momentum_window": 120, "threshold": 0.05}
+    tags = ["momentum", "trend", "tsmom"]
+
+    def signal(self, candles: list[Candle], i: int) -> int:
+        w = int(self.params.get("momentum_window", 120))
+        th = float(self.params.get("threshold", 0.05))
+        if i < w:
+            return 0
+        now_px = candles[i].close
+        prev_px = candles[i - w].close
+        if prev_px <= 0:
+            return 0
+        mom = now_px / prev_px - 1.0
+
+        sig = 0
+        if mom > th:
+            sig = 1
+        elif mom < -th:
+            sig = -1
+
+        if sig == 0:
+            return 0
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return sig
+
+
+class BreakoutMomentumOverlayStrategy(BaseStrategy):
+    name = "breakout_momo"
+    category = "trend"
+    author = "quantx"
+    description = "Breakout + Momentum Overlay"
+    default_params = {"lookback": 200, "momentum_window": 120, "momentum_threshold": 0.0}
+    tags = ["breakout", "momentum", "trend"]
+
+    def signal(self, candles: list[Candle], i: int) -> int:
+        lookback = int(self.params.get("lookback", 200))
+        mwin = int(self.params.get("momentum_window", 120))
+        mth = float(self.params.get("momentum_threshold", 0.0))
+        if i < max(lookback, mwin):
+            return 0
+
+        chunk = candles[i - lookback : i]
+        hi = max(c.high for c in chunk)
+        lo = min(c.low for c in chunk)
+        px = candles[i].close
+
+        prev_px = candles[i - mwin].close
+        if prev_px <= 0:
+            return 0
+        mom = px / prev_px - 1.0
+
+        long_sig = px > hi and mom > mth
+        short_sig = px < lo and mom < -mth
+
+        if not long_sig and not short_sig:
+            return 0
+        if not pass_common_filters(candles, i, self.params):
+            return 0
+        return 1 if long_sig else -1
+
+
 STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {}
 
 
@@ -402,5 +469,10 @@ for _builtin in [
     RsiReversalStrategy,
     BollingerBandsStrategy,
     GridStrategy,
+    TsmomStrategy,
+    BreakoutMomentumOverlayStrategy,
 ]:
     register_strategy_class(_builtin)
+
+# backward compatibility alias
+STRATEGY_REGISTRY["breakout"] = BreakoutStrategy
