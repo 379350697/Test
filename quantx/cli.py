@@ -206,11 +206,21 @@ def main(argv=None):
     load_info = load_strategy_repos(args.strategy_repo) if hasattr(args, "strategy_repo") else {"loaded": [], "files": []}
 
     if args.cmd == "data-generate":
-        _print({"ok": True, "file": generate_demo_data(args.out, bars=args.bars)}, args.json); return
+        _print({"ok": True, "file": generate_demo_data(args.out, bars=args.bars)}, args.json)
+        return
     if args.cmd == "data-generate-tick":
-        _print({"ok": True, "file": generate_tick_demo_data(args.out, ticks=args.ticks), "depth": "tick"}, args.json); return
+        _print({"ok": True, "file": generate_tick_demo_data(args.out, ticks=args.ticks), "depth": "tick"}, args.json)
+        return
     if args.cmd == "data-generate-orderbook":
-        _print({"ok": True, "file": generate_orderbook_demo_data(args.out, rows=args.rows, levels=args.levels), "depth": "L2+"}, args.json); return
+        _print(
+            {
+                "ok": True,
+                "file": generate_orderbook_demo_data(args.out, rows=args.rows, levels=args.levels),
+                "depth": "L2+",
+            },
+            args.json,
+        )
+        return
     if args.cmd == "data-fetch-klines":
         try:
             rows = fetch_binance_klines(args.symbol, timeframe=args.timeframe, limit=args.limit)
@@ -220,9 +230,11 @@ def main(argv=None):
             _print({"ok": False, "error": str(e), "symbol": args.symbol, "timeframe": args.timeframe}, True if args.json else False)
         return
     if args.cmd == "data-inspect":
-        _print(inspect_data(load_csv(args.file)), args.json); return
+        _print(inspect_data(load_csv(args.file)), args.json)
+        return
     if args.cmd == "strategy-list":
-        _print({"strategies": list_strategies(), "custom_loaded": load_info}, args.json); return
+        _print({"strategies": list_strategies(), "custom_loaded": load_info}, args.json)
+        return
 
     if args.cmd == "backtest":
         cfg = BacktestConfig(symbol=args.symbol, timeframe=args.timeframe)
@@ -230,36 +242,58 @@ def main(argv=None):
         payload = result_to_dict(res)
         payload["artifacts"] = write_report(res, args.report_dir)
         payload["custom_loaded"] = load_info
-        _print(payload, args.json); return
+        _print(payload, args.json)
+        return
     if args.cmd == "backtest-tick":
-        payload = run_tick_backtest(load_tick_csv(args.file), BacktestConfig(symbol=args.symbol, timeframe="tick"), threshold_bps=args.threshold_bps)
+        payload = run_tick_backtest(
+            load_tick_csv(args.file),
+            BacktestConfig(symbol=args.symbol, timeframe="tick"),
+            threshold_bps=args.threshold_bps,
+        )
         payload["artifacts"] = write_report_payload(payload, args.report_dir)
-        _print(payload, args.json); return
+        _print(payload, args.json)
+        return
     if args.cmd == "backtest-orderbook":
-        payload = run_orderbook_replay(load_orderbook_csv(args.file), BacktestConfig(symbol=args.symbol, timeframe="orderbook"), shock_coeff=args.shock_coeff)
+        payload = run_orderbook_replay(
+            load_orderbook_csv(args.file),
+            BacktestConfig(symbol=args.symbol, timeframe="orderbook"),
+            shock_coeff=args.shock_coeff,
+        )
         payload["artifacts"] = write_report_payload(payload, args.report_dir)
-        _print(payload, args.json); return
+        _print(payload, args.json)
+        return
     if args.cmd == "backtest-inout":
         candles = load_csv(args.file)
         ins, oos = in_out_sample_split(candles, args.split)
         cfg = BacktestConfig(symbol=args.symbol, timeframe=args.timeframe)
-        p = json.loads(args.params)
-        ir = run_backtest(ins, args.strategy, p, cfg)
-        orr = run_backtest(oos, args.strategy, p, cfg)
-        _print({"in_sample": result_to_dict(ir), "out_sample": result_to_dict(orr), "split": args.split}, args.json); return
+        params = json.loads(args.params)
+        in_sample_res = run_backtest(ins, args.strategy, params, cfg)
+        out_sample_res = run_backtest(oos, args.strategy, params, cfg)
+        _print(
+            {
+                "in_sample": result_to_dict(in_sample_res),
+                "out_sample": result_to_dict(out_sample_res),
+                "split": args.split,
+            },
+            args.json,
+        )
+        return
     if args.cmd == "monte-carlo":
         cfg = BacktestConfig(symbol=args.symbol, timeframe=args.timeframe)
         res = run_backtest(load_csv(args.file), args.strategy, json.loads(args.params), cfg)
         eq = [v for _, v in res.equity_curve]
-        _print({"base": result_to_dict(res), "monte_carlo": monte_carlo_equity(eq, n_sims=args.sims)}, args.json); return
+        _print({"base": result_to_dict(res), "monte_carlo": monte_carlo_equity(eq, n_sims=args.sims)}, args.json)
+        return
     if args.cmd == "ab-test":
         a = json.loads(args.a)
         b = json.loads(args.b)
         cfg = BacktestConfig(symbol=args.symbol, timeframe=args.timeframe)
-        _print(run_ab_test(load_csv(args.file), (a[0], a[1]), (b[0], b[1]), cfg), args.json); return
+        _print(run_ab_test(load_csv(args.file), (a[0], a[1]), (b[0], b[1]), cfg), args.json)
+        return
 
     if args.cmd == "execute-order":
-        ex = PaperLiveExecutor(args.mode); ex.arm()
+        ex = PaperLiveExecutor(args.mode)
+        ex.arm()
         rec = ex.place_order(
             symbol=args.symbol,
             side=args.side,
@@ -271,16 +305,21 @@ def main(argv=None):
             schedule_slices=args.slices,
             broker_quotes=json.loads(args.broker_quotes),
         )
-        _print({"order": rec, "state": ex.state.__dict__}, args.json); return
+        _print({"order": rec, "state": ex.state.__dict__}, args.json)
+        return
     if args.cmd == "monitor":
         payload = json.loads(open(args.report_json, "r", encoding="utf-8").read())
-        _print(monitor_equity(payload.get("equity_curve", []), dd_alert_pct=args.dd_alert), args.json); return
+        _print(monitor_equity(payload.get("equity_curve", []), dd_alert_pct=args.dd_alert), args.json)
+        return
     if args.cmd == "log-analyze":
-        _print(analyze_logs(json.loads(args.lines)), args.json); return
+        _print(analyze_logs(json.loads(args.lines)), args.json)
+        return
     if args.cmd == "ml-online":
-        _print(online_update(json.loads(args.state), json.loads(args.features), args.target, args.lr), args.json); return
+        _print(online_update(json.loads(args.state), json.loads(args.features), args.target, args.lr), args.json)
+        return
     if args.cmd == "sentiment":
-        _print({"sentiment_score": simple_sentiment(args.text)}, args.json); return
+        _print({"sentiment_score": simple_sentiment(args.text)}, args.json)
+        return
 
     if args.cmd == "batch":
         candles = load_csv(args.file)
@@ -288,21 +327,43 @@ def main(argv=None):
         symbols = json.loads(args.symbols)
         tfs = json.loads(args.timeframes)
         data_map = {(s, tf): candles for s in symbols for tf in tfs}
-        results = run_parallel_matrix(data_map, strategies, {"symbol": "", "timeframe": ""}, max_workers=args.workers, strategy_repo_paths=args.strategy_repo)
-        _print({"count": len(results), "results": [result_to_dict(r) for r in results], "custom_loaded": load_info}, args.json); return
+        results = run_parallel_matrix(
+            data_map,
+            strategies,
+            {"symbol": "", "timeframe": ""},
+            max_workers=args.workers,
+            strategy_repo_paths=args.strategy_repo,
+        )
+        _print({"count": len(results), "results": [result_to_dict(r) for r in results], "custom_loaded": load_info}, args.json)
+        return
     if args.cmd == "optimize":
-        candles = load_csv(args.file); cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h"); space = json.loads(args.space)
+        candles = load_csv(args.file)
+        cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
+        space = json.loads(args.space)
         payload = grid_search(candles, args.strategy, space, cfg) if args.method == "grid" else random_scan(candles, args.strategy, space, args.samples, cfg)
-        _print({"top": payload[:10], "count": len(payload), "custom_loaded": load_info}, args.json); return
+        _print({"top": payload[:10], "count": len(payload), "custom_loaded": load_info}, args.json)
+        return
     if args.cmd == "walk-forward":
-        candles = load_csv(args.file); cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
-        _print({"windows": walk_forward(candles, args.strategy, json.loads(args.params), cfg, splits=args.splits), "custom_loaded": load_info}, args.json); return
+        candles = load_csv(args.file)
+        cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
+        _print(
+            {"windows": walk_forward(candles, args.strategy, json.loads(args.params), cfg, splits=args.splits), "custom_loaded": load_info},
+            args.json,
+        )
+        return
     if args.cmd == "radar":
-        files = json.loads(args.files); watchlist = {k: load_csv(v) for k, v in files.items()}; cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
-        _print({"opportunities": scan_watchlist(watchlist, args.strategy, json.loads(args.params), cfg), "custom_loaded": load_info}, args.json); return
+        files = json.loads(args.files)
+        watchlist = {k: load_csv(v) for k, v in files.items()}
+        cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
+        _print({"opportunities": scan_watchlist(watchlist, args.strategy, json.loads(args.params), cfg), "custom_loaded": load_info}, args.json)
+        return
     if args.cmd == "deploy":
-        ex = PaperLiveExecutor(args.mode); ex.arm(); probe = ex.place_order(args.symbol, "BUY", 0.01); close = ex.close_all()
-        _print({"probe_order": probe, "close_all": close, "state": ex.state.__dict__}, args.json); return
+        ex = PaperLiveExecutor(args.mode)
+        ex.arm()
+        probe = ex.place_order(args.symbol, "BUY", 0.01)
+        close = ex.close_all()
+        _print({"probe_order": probe, "close_all": close, "state": ex.state.__dict__}, args.json)
+        return
 
 
 if __name__ == "__main__":
