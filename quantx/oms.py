@@ -158,6 +158,13 @@ class OrderManager:
     def get(self, order_id: str) -> OMSOrder:
         return self._orders[order_id]
 
+
+    def list_orders(self) -> list[OMSOrder]:
+        return list(self._orders.values())
+
+    def list_working_order_ids(self) -> list[str]:
+        return [oid for oid, o in self._orders.items() if o.status in {"NEW", "PARTIALLY_FILLED"}]
+
     @classmethod
     def recover(cls, store: JsonlOMSStore, initial_cash: float = 0.0) -> OrderManager:
         om = cls(initial_cash=initial_cash, store=store)
