@@ -90,3 +90,25 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
 
 def _append_check(checks: list[dict[str, Any]], name: str, cond: bool, advice: str) -> None:
     checks.append({"name": name, "ok": cond, "advice": "" if cond else advice})
+
+
+class ReadinessError(RuntimeError):
+    """Raised when go-live readiness checks fail."""
+
+
+def blockers(report: ReadinessReport) -> list[dict[str, Any]]:
+    """Return all failed checks for quick operator inspection."""
+
+    return [c for c in report.checks if not c["ok"]]
+
+
+def assert_ready(ctx: ReadinessContext) -> ReadinessReport:
+    """Evaluate readiness and raise detailed error when not ready."""
+
+    report = evaluate_readiness(ctx)
+    if report.ok:
+        return report
+
+    failed = blockers(report)
+    names = ", ".join(c["name"] for c in failed)
+    raise ReadinessError(f"go_live_blocked:{names}")

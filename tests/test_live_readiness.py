@@ -10,7 +10,7 @@ from quantx.audit import AuditTrail, JsonlAuditStore
 from quantx.exchanges.base import ExchangeOrder, ExchangePosition, SymbolSpec
 from quantx.live_service import LiveExecutionConfig, LiveExecutionService
 from quantx.oms import JsonlOMSStore, OMSOrder, OrderManager
-from quantx.readiness import ReadinessContext, evaluate_readiness
+from quantx.readiness import ReadinessContext, ReadinessError, assert_ready, blockers, evaluate_readiness
 from quantx.risk_engine import CircuitBreakerLimits, RiskCircuitBreaker, RiskLimits, check_account_notional
 from quantx.system_log import JsonlEventLogger, MemoryEventLogger
 
@@ -292,3 +292,37 @@ def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
     rep = evaluate_readiness(ctx)
     assert rep.ok
     assert rep.score == 100
+
+
+def test_readiness_assert_ready_and_blockers(tmp_path):
+    router = AlertRouter()
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(dry_run=False),
+        risk_limits=RiskLimits(),
+        alert_router=router,
+        oms_store=None,
+    )
+    rep = evaluate_readiness(ctx)
+    failed = blockers(rep)
+    assert len(failed) >= 1
+
+    try:
+        assert_ready(ctx)
+        raise AssertionError("expected ReadinessError")
+    except ReadinessError as exc:
+        assert "go_live_blocked" in str(exc)
+
+    router.register_webhook("ops", "https://example.com/hook")
+    ok_ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=("BTCUSDT",),
+            max_orders_per_cycle=2,
+            max_notional_per_cycle=1000.0,
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
+        alert_router=router,
+        oms_store=JsonlOMSStore(str(tmp_path / "oms" / "events.jsonl")),
+    )
+    final = assert_ready(ok_ctx)
+    assert final.ok
