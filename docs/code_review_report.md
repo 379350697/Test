@@ -7,8 +7,9 @@
 
 ## 1. 单元测试与覆盖率要求
 - 已存在单元测试：`tests/test_quantx.py`，覆盖主流程（回测、优化、执行、监控、AB、策略加载）。
-- 当前状态：`pytest` 通过。
-- 覆盖率门槛：已在 `pyproject.toml` 接入 `pytest-cov` 参数与最低覆盖率门槛（`--cov-fail-under=47`），覆盖率低于阈值将直接失败。
+- 当前状态：`python -m pytest` 通过。
+- 覆盖率门槛：`pyproject.toml` 已接入 `pytest-cov` 与最低覆盖率门槛（`--cov-fail-under=47`），覆盖率低于阈值会直接失败。
+- 可执行性补强：新增 `pythonpath = ["."]`，确保在当前环境下直接执行 `pytest` 时也能稳定导入 `quantx` 包。
 
 ## 2. 边界情况处理
 - 已发现的正向实践：
@@ -16,7 +17,7 @@
   - 新增测试覆盖了 `BreakoutStrategy` 默认 lookback 生效的回归场景。
 - 仍需补强：
   - YAML 配置反序列化后的结构化校验（建议后续引入 schema 校验）。
-  - 交易执行异常路径（交易所抖动、部分成交失败、重试退避）测试样例。
+  - 交易执行异常路径（交易所抖动、部分成交失败、重试退避）可继续扩展样例。
 
 ## 3. 性能或安全约束
 - 有基础约束：风控参数、执行模式区分、部分并行能力。
@@ -26,19 +27,19 @@
 
 ## 4. 错误处理与日志
 - 有监控与日志分析模块（`monitoring.py`）。
-- 缺口：
-  - 日志结构化字段、错误分级、错误码标准未统一。
-  - CLI 层异常传播和用户级错误提示可进一步标准化。
+- 后续优化方向：
+  - 统一日志结构化字段、错误分级与错误码标准。
+  - 进一步标准化 CLI 层异常传播和用户级错误提示。
 
 ## 5. lint / 静态分析结果
-- `ruff check .`：失败（31 项），主要是 `quantx/cli.py` 的 E702（单行多语句）与 `quantx/data.py` 的 E741（变量名 `l`）。
-- `mypy quantx tests`：失败（5 项），涉及局部变量类型注解、第三方 stubs（matplotlib）、以及一个赋值类型不一致。
+- `python -m ruff check .`：通过（0 errors）。
+- `python -m mypy quantx tests`：通过（0 errors，含若干 annotation-unchecked 提示）。
 
 ## 6. 总体代码审查意见
-### 阻断项（必须修复后再宣称“满足规范”）
-1. 清理 `quantx/cli.py` 单行多语句，消除 E702。
-2. 修复 `quantx/data.py` 歧义变量名与必要的类型问题。
-3. 为 mypy 制定分阶段清零计划（至少先收敛项目内可控错误）。
+### 已完成项（前次阻断项已关闭）
+1. `quantx/cli.py` 单行多语句问题已清理，E702 已消除。
+2. `quantx/data.py` 歧义变量名与类型问题已修复。
+3. mypy 项目内可控错误已收敛到 0。
 
 ### 建议项（下一迭代）
 1. 逐步提升覆盖率门槛（例如 47% -> 60% -> 80%）并单独跟踪核心模块覆盖率。
@@ -46,6 +47,6 @@
 3. 增加结构化日志和错误码规范文档并落地到 CLI。
 
 ## 7. 测试结果摘要
-- ✅ `pytest`：6 passed，覆盖率 `48%`（已达到当前门槛 `47%`）
-- ❌ `ruff check .`：31 errors
-- ❌ `mypy quantx tests`：5 errors
+- ✅ `python -m pytest`：36 passed，覆盖率 `61.92%`（达到当前门槛 `47%`）
+- ✅ `python -m ruff check .`：All checks passed
+- ✅ `python -m mypy quantx tests`：Success（no issues found）
