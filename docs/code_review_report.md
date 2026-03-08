@@ -3,7 +3,7 @@
 ## 审查范围
 - 代码目录：`quantx/`
 - 测试目录：`tests/`
-- 规范文档：`docs/`
+- 规范文档：`docs/`（新增个人实盘清单与日志错误码规范）
 - CI 门禁：`.github/workflows/quality-gates.yml`
 
 ## 1. 单元测试与覆盖率要求
@@ -48,9 +48,13 @@
 
 ### 建议项（下一迭代）
 1. 继续提升覆盖率门槛（例如 60% -> 80%）并单独跟踪核心模块覆盖率。
-2. 增加结构化日志和错误码规范文档并落地到 CLI。
+2. 继续将结构化日志和错误码规范向 CLI/运行脚本收口（文档基线已新增）。
 
-## 7. 测试结果摘要
+## 7. 附加文档产出
+- `docs/personal_live_go_no_go_checklist.md`：个人实盘上线/回滚最小清单。
+- `docs/logging_error_code_min_spec.md`：日志字段、错误码与轮转最小规范。
+
+## 8. 测试结果摘要
 - ✅ `pytest -q`：36 passed，覆盖率 `61.73%`（达到当前门槛 `60%`）
 - ✅ `python -m ruff check .`：All checks passed
 - ✅ `python -m mypy quantx tests`：Success（no issues found）

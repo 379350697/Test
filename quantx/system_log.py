@@ -31,15 +31,45 @@ class EventLogger(Protocol):
 
 
 class JsonlEventLogger:
-    """Append-only jsonl logger for structured operational events."""
+    """Append-only jsonl logger for structured operational events.
 
-    def __init__(self, path: str):
+    Supports optional lightweight size-based rotation for personal deployments.
+    """
+
+    def __init__(self, path: str, *, max_bytes: int = 0, backup_count: int = 3):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.max_bytes = max(0, int(max_bytes))
+        self.backup_count = max(0, int(backup_count))
 
     def log(self, event: LogEvent) -> None:
+        line = json.dumps(asdict(event), ensure_ascii=False, separators=(",", ":")) + "\n"
+        self._rotate_if_needed(len(line.encode("utf-8")))
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(event), ensure_ascii=False, separators=(",", ":")) + "\n")
+            f.write(line)
+
+    def _rotate_if_needed(self, incoming_bytes: int) -> None:
+        if self.max_bytes <= 0:
+            return
+        if not self.path.exists():
+            return
+        if self.path.stat().st_size + incoming_bytes <= self.max_bytes:
+            return
+
+        if self.backup_count > 0:
+            for idx in range(self.backup_count - 1, 0, -1):
+                src = self.path.with_name(f"{self.path.name}.{idx}")
+                dst = self.path.with_name(f"{self.path.name}.{idx + 1}")
+                if src.exists():
+                    if dst.exists():
+                        dst.unlink()
+                    src.rename(dst)
+            first = self.path.with_name(f"{self.path.name}.1")
+            if first.exists():
+                first.unlink()
+            self.path.rename(first)
+        else:
+            self.path.unlink(missing_ok=True)
 
 
 class MemoryEventLogger:

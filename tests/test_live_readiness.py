@@ -12,7 +12,7 @@ from quantx.live_service import LiveExecutionConfig, LiveExecutionService
 from quantx.oms import JsonlOMSStore, OMSOrder, OrderManager
 from quantx.readiness import ReadinessContext, ReadinessError, assert_ready, blockers, evaluate_readiness
 from quantx.risk_engine import CircuitBreakerLimits, RiskCircuitBreaker, RiskLimits, check_account_notional
-from quantx.system_log import JsonlEventLogger, MemoryEventLogger
+from quantx.system_log import JsonlEventLogger, LogEvent, MemoryEventLogger
 
 
 class DummyExchange:
@@ -166,6 +166,30 @@ def test_unified_jsonl_event_logger_covers_trade_system_alert(tmp_path):
     lines = p.read_text(encoding="utf-8").splitlines()
     cats = {json.loads(line)["category"] for line in lines}
     assert {"trade", "system", "alert"}.issubset(cats)
+
+
+def test_jsonl_event_logger_rotation_for_personal_runtime(tmp_path):
+    logger = JsonlEventLogger(str(tmp_path / "logs" / "events.jsonl"), max_bytes=220, backup_count=2)
+
+    for i in range(20):
+        logger.log(
+            LogEvent(
+                category="system",
+                event="heartbeat",
+                stage="runtime",
+                payload={"i": i, "msg": "x" * 30},
+            )
+        )
+
+    base = tmp_path / "logs" / "events.jsonl"
+    r1 = tmp_path / "logs" / "events.jsonl.1"
+    assert base.exists()
+    assert r1.exists()
+    # backup_count=2 means at most .1 and .2 may exist
+    r2 = tmp_path / "logs" / "events.jsonl.2"
+    assert not ((tmp_path / "logs" / "events.jsonl.3").exists())
+    if r2.exists():
+        assert r2.stat().st_size > 0
 
 def test_audit_jsonl_store_roundtrip_and_verify(tmp_path):
     trail = AuditTrail()
