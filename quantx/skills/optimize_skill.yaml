@@ -1,0 +1,10 @@
+name: quantx-optimize
+description: Parameter optimization with grid/random search.
+entrypoint: quantx optimize
+args:
+  file: data csv path
+  strategy: strategy name
+  method: grid|random
+  space: json param space
+  samples: number for random
+  json: true

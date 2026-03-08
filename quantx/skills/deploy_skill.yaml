@@ -1,0 +1,7 @@
+name: quantx-deploy
+description: Paper/live deployment with safety switch and close-all support.
+entrypoint: quantx deploy
+args:
+  mode: paper|live
+  symbol: symbol
+  json: true

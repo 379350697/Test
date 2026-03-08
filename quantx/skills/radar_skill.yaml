@@ -1,0 +1,8 @@
+name: quantx-radar
+description: Real-time style watchlist opportunity scanner with context and risk explanation.
+entrypoint: quantx radar
+args:
+  files: json symbol->csv map
+  strategy: strategy name
+  params: json dict
+  json: true
