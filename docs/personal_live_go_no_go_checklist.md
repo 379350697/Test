@@ -32,3 +32,9 @@ python -m mypy quantx tests
 python -m pip_audit
 python -m bandit -q -r quantx -c .bandit
 ```
+
+
+## F. 日终复盘（推荐）
+```bash
+quantx replay-daily --events runtime/events.jsonl --oms runtime/oms/events.jsonl --audit runtime/audit/events.jsonl --json
+```

@@ -23,6 +23,7 @@ from .models import BacktestConfig
 from .monitoring import analyze_logs, monitor_equity
 from .optimize import grid_search, random_scan, walk_forward
 from .radar import scan_watchlist
+from .replay import build_daily_replay_report
 from .reporting import write_report, write_report_payload
 from .strategies import list_strategies
 from .strategy_loader import load_strategy_repos
@@ -194,6 +195,15 @@ def build_parser():
     _attach_strategy_repo_args(r)
     r.add_argument("--json", action="store_true")
 
+
+    rp = sub.add_parser("replay-daily")
+    rp.add_argument("--events", required=True, help="jsonl event log path")
+    rp.add_argument("--oms", default="", help="optional oms jsonl store path")
+    rp.add_argument("--audit", default="", help="optional audit jsonl store path")
+    rp.add_argument("--day", default="", help="target day YYYY-MM-DD, default utc today")
+    rp.add_argument("--out", default="", help="optional output json path")
+    rp.add_argument("--json", action="store_true")
+
     x = sub.add_parser("deploy")
     x.add_argument("--mode", choices=["paper", "live"], default="paper")
     x.add_argument("--symbol", default="BTCUSDT")
@@ -326,6 +336,20 @@ def main(argv=None):
         cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
         _print({"opportunities": scan_watchlist(watchlist, args.strategy, json.loads(args.params), cfg), "custom_loaded": load_info}, args.json)
         return
+
+    if args.cmd == "replay-daily":
+        payload = build_daily_replay_report(
+            event_log_path=args.events,
+            oms_store_path=(args.oms or None),
+            audit_store_path=(args.audit or None),
+            day=(args.day or None),
+        )
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print(payload, True if args.json else False)
+        return
+
     if args.cmd == "deploy":
         ex = PaperLiveExecutor(args.mode)
         ex.arm()

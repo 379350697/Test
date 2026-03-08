@@ -352,3 +352,39 @@ def test_readiness_assert_ready_and_blockers(tmp_path):
     )
     final = assert_ready(ok_ctx)
     assert final.ok
+
+
+class _AlwaysFailExchange(DummyExchange):
+    def place_order(self, order: ExchangeOrder) -> dict[str, object]:
+        self.place_attempts += 1
+        raise RuntimeError("downstream_unavailable")
+
+
+def test_live_service_auto_switches_to_dry_run_after_consecutive_failures():
+    ex = _AlwaysFailExchange()
+    logger = MemoryEventLogger()
+    svc = LiveExecutionService(
+        ex,
+        config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=("BTCUSDT",),
+            max_retries=0,
+            max_consecutive_failures=2,
+            auto_switch_to_dry_run_on_failures=True,
+        ),
+        event_logger=logger,
+    )
+    svc.sync_symbol_rules(["BTCUSDT"])
+
+    orders = [{"symbol": "BTCUSDT", "side": "BUY", "qty": 0.01, "price": 50000.0}]
+    first = svc.execute_orders(orders)
+    second = svc.execute_orders(orders)
+    third = svc.execute_orders(orders)
+
+    assert not first["ok"]
+    assert not second["ok"]
+    assert svc.config.dry_run is True
+    assert third["ok"]  # degraded to dry-run mode, no exchange call
+
+    events = [e for e in logger.events if e.event == "execution_degraded_to_dry_run"]
+    assert len(events) >= 1

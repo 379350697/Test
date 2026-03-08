@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import time
 from typing import Any
 
-from .error_codes import QX_EXEC_CYCLE_LIMIT, QX_EXEC_PLACE_ORDER_EMPTY, with_code
+from .error_codes import QX_EXEC_AUTO_DEGRADED, QX_EXEC_CYCLE_LIMIT, QX_EXEC_PLACE_ORDER_EMPTY, with_code
 from .exchange_rules import SymbolRule, validate_order
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
@@ -24,6 +24,8 @@ class LiveExecutionConfig:
     allowed_symbols: tuple[str, ...] | None = None
     max_orders_per_cycle: int | None = None
     max_notional_per_cycle: float | None = None
+    max_consecutive_failures: int | None = 5
+    auto_switch_to_dry_run_on_failures: bool = True
 
 
 class LiveExecutionService:
@@ -44,6 +46,7 @@ class LiveExecutionService:
         self.config = config or LiveExecutionConfig()
         self.symbol_rules: dict[str, SymbolRule] = {}
         self.event_logger = event_logger
+        self._consecutive_failures = 0
 
     def _log(
         self,
@@ -163,17 +166,56 @@ class LiveExecutionService:
 
             if self.config.dry_run:
                 accepted.append({"order": od, "result": {"accepted": True, "dry_run": True, "clientOrderId": client_order_id}})
-                self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": True, "order": od})
+                self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": True, "exchange": type(self.client).__name__, "order": od})
                 continue
 
             try:
                 res = self._place_with_retry(order)
                 accepted.append({"order": od, "result": res})
-                self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": False, "result": res})
+                self._consecutive_failures = 0
+                self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": False, "exchange": type(self.client).__name__, "result": res})
             except Exception as exc:  # noqa: BLE001
+                self._consecutive_failures += 1
                 reason = f"place_failed:{exc}"
                 rejected.append({"order": od, "reason": reason})
-                self._log("trade", "order_rejected", level="ERROR", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"reason": reason, "order": od})
+                self._log(
+                    "trade",
+                    "order_rejected",
+                    level="ERROR",
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    stage="execute",
+                    payload={
+                        "reason": reason,
+                        "error_code": "QX-EXEC-PLACE",
+                        "exchange": type(self.client).__name__,
+                        "consecutive_failures": self._consecutive_failures,
+                        "order": od,
+                    },
+                )
+
+                limit = self.config.max_consecutive_failures
+                if (
+                    self.config.auto_switch_to_dry_run_on_failures
+                    and limit is not None
+                    and limit > 0
+                    and self._consecutive_failures >= limit
+                    and not self.config.dry_run
+                ):
+                    self.config.dry_run = True
+                    self._log(
+                        "system",
+                        "execution_degraded_to_dry_run",
+                        level="ERROR",
+                        symbol=symbol,
+                        client_order_id=client_order_id,
+                        stage="execute",
+                        payload={
+                            "reason": with_code(QX_EXEC_AUTO_DEGRADED, "consecutive_failures_threshold_reached"),
+                            "threshold": limit,
+                            "consecutive_failures": self._consecutive_failures,
+                        },
+                    )
 
         return {"accepted": accepted, "rejected": rejected, "ok": len(rejected) == 0}
 
