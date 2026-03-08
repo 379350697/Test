@@ -6,6 +6,7 @@ import json
 from .abtest import run_ab_test
 from .analytics import in_out_sample_split, monte_carlo_equity
 from .backtest import result_to_dict, run_backtest, run_parallel_matrix
+from .credentials import credential_presence_snapshot, load_binance_credentials, load_okx_credentials
 from .data import (
     generate_demo_data,
     generate_orderbook_demo_data,
@@ -204,6 +205,11 @@ def build_parser():
     rp.add_argument("--out", default="", help="optional output json path")
     rp.add_argument("--json", action="store_true")
 
+
+    cred = sub.add_parser("credentials-check")
+    cred.add_argument("--exchange", choices=["binance", "okx", "all"], default="all")
+    cred.add_argument("--json", action="store_true")
+
     x = sub.add_parser("deploy")
     x.add_argument("--mode", choices=["paper", "live"], default="paper")
     x.add_argument("--symbol", default="BTCUSDT")
@@ -347,6 +353,21 @@ def main(argv=None):
         if args.out:
             with open(args.out, "w", encoding="utf-8") as f:
                 f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print(payload, True if args.json else False)
+        return
+
+
+    if args.cmd == "credentials-check":
+        snapshot = credential_presence_snapshot()
+        payload: dict[str, object] = {"ok": True, "exchange": args.exchange, "present": snapshot}
+        try:
+            if args.exchange in {"binance", "all"}:
+                load_binance_credentials()
+            if args.exchange in {"okx", "all"}:
+                load_okx_credentials()
+        except ValueError as exc:
+            payload["ok"] = False
+            payload["error"] = str(exc)
         _print(payload, True if args.json else False)
         return
 
