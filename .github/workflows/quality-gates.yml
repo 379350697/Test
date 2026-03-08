@@ -31,6 +31,9 @@ jobs:
       - name: Run mypy
         run: python -m mypy quantx tests
 
+      - name: Run performance smoke checks
+        run: pytest -q tests/test_performance_smoke.py
+
   security:
     runs-on: ubuntu-latest
     steps:

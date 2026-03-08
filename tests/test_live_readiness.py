@@ -238,7 +238,8 @@ def test_rollout_guards_block_non_whitelist_and_excess_cycle():
     ]
     res = svc.execute_orders(too_many)
     assert not res["ok"]
-    assert res["rejected"][0]["reason"] == "max_orders_per_cycle_exceeded"
+    assert "max_orders_per_cycle_exceeded" in res["rejected"][0]["reason"]
+    assert res["rejected"][0]["reason"].startswith("QX-EXEC-001:")
 
     svc2 = LiveExecutionService(
         ex,
@@ -311,6 +312,7 @@ def test_readiness_assert_ready_and_blockers(tmp_path):
         raise AssertionError("expected ReadinessError")
     except ReadinessError as exc:
         assert "go_live_blocked" in str(exc)
+        assert str(exc).startswith("QX-READY-001:")
 
     router.register_webhook("ops", "https://example.com/hook")
     ok_ctx = ReadinessContext(

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import time
 from typing import Any
 
+from .error_codes import QX_EXEC_CYCLE_LIMIT, QX_EXEC_PLACE_ORDER_EMPTY, with_code
 from .exchange_rules import SymbolRule, validate_order
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
@@ -113,12 +114,12 @@ class LiveExecutionService:
 
         total_notional = sum(abs(float(od.get("qty", 0.0)) * float(od.get("price", 0.0))) for od in orders)
         if self.config.max_orders_per_cycle is not None and len(orders) > self.config.max_orders_per_cycle:
-            reason = "max_orders_per_cycle_exceeded"
+            reason = with_code(QX_EXEC_CYCLE_LIMIT, "max_orders_per_cycle_exceeded")
             self._log("system", "cycle_blocked", level="WARN", stage="execute", payload={"reason": reason, "orders": len(orders)})
             return {"accepted": [], "rejected": [{"reason": reason, "orders": len(orders)}], "ok": False}
 
         if self.config.max_notional_per_cycle is not None and total_notional > self.config.max_notional_per_cycle + 1e-12:
-            reason = "max_notional_per_cycle_exceeded"
+            reason = with_code(QX_EXEC_CYCLE_LIMIT, "max_notional_per_cycle_exceeded")
             self._log(
                 "system",
                 "cycle_blocked",
@@ -206,7 +207,7 @@ class LiveExecutionService:
                     break
                 time.sleep(self.config.retry_backoff_ms / 1000)
         if last_err is None:
-            raise RuntimeError("place_order_failed_without_exception")
+            raise RuntimeError(with_code(QX_EXEC_PLACE_ORDER_EMPTY, "place_order_failed_without_exception"))
         raise last_err
 
     def _client_order_id(self, symbol: str, idx: int) -> str:

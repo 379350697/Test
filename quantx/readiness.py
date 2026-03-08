@@ -8,6 +8,7 @@ from typing import Any
 from .alerts import AlertRouter
 from .live_service import LiveExecutionConfig
 from .oms import JsonlOMSStore
+from .error_codes import QX_READY_BLOCKED, with_code
 from .risk_engine import RiskLimits
 
 
@@ -110,4 +111,4 @@ def assert_ready(ctx: ReadinessContext) -> ReadinessReport:
 
     failed = blockers(report)
     names = ", ".join(c["name"] for c in failed)
-    raise ReadinessError(f"go_live_blocked:{names}")
+    raise ReadinessError(with_code(QX_READY_BLOCKED, f"go_live_blocked:{names}"))

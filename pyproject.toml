@@ -7,6 +7,9 @@ name = "quantx"
 version = "0.1.0"
 description = "Quant trading system for crypto exchanges"
 requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
 
 [project.scripts]
 quantx = "quantx.cli:main"
@@ -28,11 +31,12 @@ dev = [
     "mypy>=1.10",
     "bandit>=1.7.9",
     "pip-audit>=2.7.3",
+    "types-PyYAML>=6.0",
 ]
 
 
 [tool.pytest.ini_options]
-addopts = "--cov=quantx --cov-report=term-missing --cov-fail-under=47 -q"
+addopts = "--cov=quantx --cov-report=term-missing --cov-fail-under=60 -q"
 pythonpath = ["."]
 
 
