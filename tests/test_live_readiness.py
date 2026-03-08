@@ -10,7 +10,8 @@ from quantx.audit import AuditTrail, JsonlAuditStore
 from quantx.exchanges.base import ExchangeOrder, ExchangePosition, SymbolSpec
 from quantx.live_service import LiveExecutionConfig, LiveExecutionService
 from quantx.oms import JsonlOMSStore, OMSOrder, OrderManager
-from quantx.risk_engine import CircuitBreakerLimits, RiskCircuitBreaker, check_account_notional
+from quantx.readiness import ReadinessContext, evaluate_readiness
+from quantx.risk_engine import CircuitBreakerLimits, RiskCircuitBreaker, RiskLimits, check_account_notional
 from quantx.system_log import JsonlEventLogger, MemoryEventLogger
 
 
@@ -251,3 +252,43 @@ def test_rollout_guards_block_non_whitelist_and_excess_cycle():
     res2 = svc2.execute_orders(mix)
     assert not res2["ok"]
     assert any(r.get("reason") == "symbol_not_allowed_in_rollout" for r in res2["rejected"])
+
+
+def test_readiness_evaluator_flags_missing_gates(tmp_path):
+    router = AlertRouter()
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(dry_run=False),
+        risk_limits=RiskLimits(),
+        alert_router=router,
+        oms_store=None,
+    )
+
+    rep = evaluate_readiness(ctx)
+    assert not rep.ok
+    assert rep.score < 100
+    names = {c["name"]: c for c in rep.checks}
+    assert not names["rollout_allowed_symbols"]["ok"]
+    assert not names["alert_channel_registered"]["ok"]
+
+
+def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
+    router = AlertRouter()
+    router.register_webhook("ops", "https://example.com/hook")
+
+    store = JsonlOMSStore(str(tmp_path / "oms" / "events.jsonl"))
+
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=("BTCUSDT",),
+            max_orders_per_cycle=5,
+            max_notional_per_cycle=50000.0,
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
+        alert_router=router,
+        oms_store=store,
+    )
+
+    rep = evaluate_readiness(ctx)
+    assert rep.ok
+    assert rep.score == 100
