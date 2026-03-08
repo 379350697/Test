@@ -25,7 +25,7 @@ from quantx.portfolio_opt import (
     rolling_rebalance_cta_portfolio,
 )
 from quantx.reporting import write_report, write_report_payload
-from quantx.strategies import BreakoutStrategy, STRATEGY_REGISTRY
+from quantx.strategies import BreakoutStrategy, STRATEGY_REGISTRY, get_strategy_class
 from quantx.strategy_loader import load_strategy_repos
 
 
@@ -40,6 +40,7 @@ def test_builtin_strategy_registry_contains_core_and_aliases():
         "grid",
         "tsmom",
         "breakout_momo",
+        "剥头皮",
     }
     assert expected_core.issubset(set(STRATEGY_REGISTRY))
     assert STRATEGY_REGISTRY["breakout"] is STRATEGY_REGISTRY["cta_strategy"]
@@ -74,6 +75,33 @@ def test_breakout_strategy_default_lookback_is_applied_in_signal():
         for i in range(80)
     ]
     assert strategy.signal(candles, 79) == 0
+
+
+def test_scalping_strategy_registry_and_signal():
+    assert STRATEGY_REGISTRY["scalping"] is STRATEGY_REGISTRY["剥头皮"]
+    strategy = get_strategy_class("剥头皮")(min_score=4)
+
+    candles = []
+    for i in range(60):
+        open_px = 100.0
+        close_px = 100.02 if i % 2 else 99.98
+        candles.append(Candle(ts=f"t{i}", open=open_px, high=100.30, low=99.70, close=close_px, volume=100.0))
+
+    for i in range(60, 80):
+        prev_close = candles[-1].close
+        open_px = max(prev_close, 100.2)
+        close_px = open_px + 0.07
+        high_px = close_px + 0.12
+        low_px = open_px - 0.06
+        vol = 180.0
+        if i == 79:
+            close_px = open_px + 0.45
+            high_px = close_px + 0.08
+            low_px = open_px - 0.05
+            vol = 360.0
+        candles.append(Candle(ts=f"t{i}", open=open_px, high=high_px, low=low_px, close=close_px, volume=vol))
+
+    assert strategy.signal(candles, 79) == 1
 
 def test_backtest_and_walk_forward(tmp_path):
     fp = generate_demo_data(str(tmp_path / "demo.csv"), bars=200)

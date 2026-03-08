@@ -1,0 +1,31 @@
+# Crypto 合约确认型剥头皮策略参数模板
+strategy: "剥头皮"
+alias: "scalping"
+timeframe: "5m"
+symbols: ["BTCUSDT", "ETHUSDT"]
+optional_symbols: ["SOLUSDT"]
+
+# 信号参数
+key_level_lookback: 48
+key_level_tolerance: 0.0025
+cvd_window: 20
+cvd_bias_threshold: 0.08
+impulse_window: 24
+impulse_volume_z: 1.2
+impulse_move_threshold: 0.003
+oi_proxy_short: 8
+oi_proxy_long: 34
+pullback_window: 8
+retest_tolerance: 0.002
+min_score: 5
+
+# setup 分级风险（单位：R）
+risk_map:
+  A: 1.25
+  B: 1.0
+  C: 0.5
+
+# 日内风险规则
+max_daily_loss_r: 2.0
+max_consecutive_losses: 3
+min_rr: 2.0

@@ -461,6 +461,131 @@ class BreakoutMomentumOverlayStrategy(BaseStrategy):
         return 1 if long_sig else -1
 
 
+class ScalpingCryptoStrategy(BaseStrategy):
+    name = "剥头皮"
+    category = "scalping"
+    author = "quantx"
+    description = "Crypto 合约确认型剥头皮：关键位 + CVD代理 + 主动成交推动 + OI代理 + 回抽确认"
+    default_params = {
+        "key_level_lookback": 48,
+        "key_level_tolerance": 0.0025,
+        "cvd_window": 20,
+        "cvd_bias_threshold": 0.08,
+        "impulse_window": 24,
+        "impulse_volume_z": 1.2,
+        "impulse_move_threshold": 0.003,
+        "oi_proxy_short": 8,
+        "oi_proxy_long": 34,
+        "pullback_window": 8,
+        "retest_tolerance": 0.002,
+        "min_score": 5,
+    }
+    tags = ["crypto", "scalping", "cvd-proxy", "oi-proxy", "pullback-confirm"]
+    risk_profile = "high"
+
+    def _cvd_proxy_bias(self, candles: list[Candle], i: int, window: int) -> float:
+        start = max(1, i - window + 1)
+        signed = 0.0
+        gross = 0.0
+        for k in range(start, i + 1):
+            c = candles[k]
+            direction = 1.0 if c.close >= c.open else -1.0
+            v = max(c.volume, 0.0)
+            signed += direction * v
+            gross += v
+        if gross <= 1e-12:
+            return 0.0
+        return signed / gross
+
+    def _zscore(self, values: list[float], x: float) -> float:
+        if len(values) < 2:
+            return 0.0
+        mu = mean(values)
+        sigma = pstdev(values)
+        if sigma <= 1e-12:
+            return 0.0
+        return (x - mu) / sigma
+
+    def _score_direction(self, candles: list[Candle], i: int, direction: int) -> int:
+        lookback = int(self.params.get("key_level_lookback", 48))
+        tol = float(self.params.get("key_level_tolerance", 0.0025))
+        cvd_window = int(self.params.get("cvd_window", 20))
+        cvd_th = float(self.params.get("cvd_bias_threshold", 0.08))
+        impulse_window = int(self.params.get("impulse_window", 24))
+        impulse_z = float(self.params.get("impulse_volume_z", 1.2))
+        impulse_move_th = float(self.params.get("impulse_move_threshold", 0.003))
+        oi_short = int(self.params.get("oi_proxy_short", 8))
+        oi_long = int(self.params.get("oi_proxy_long", 34))
+        pb_window = int(self.params.get("pullback_window", 8))
+        retest_tol = float(self.params.get("retest_tolerance", 0.002))
+
+        if i < max(lookback, cvd_window + 1, impulse_window + 1, oi_long + 1, pb_window + 1):
+            return 0
+
+        px = candles[i].close
+        if px <= 0:
+            return 0
+        recent = candles[i - lookback : i]
+        hi = max(c.high for c in recent)
+        lo = min(c.low for c in recent)
+
+        score = 0
+        near_resistance = abs(px - hi) / px <= tol
+        near_support = abs(px - lo) / px <= tol
+        key_ok = (near_support or near_resistance)
+        if key_ok:
+            score += 2
+
+        cvd_bias = self._cvd_proxy_bias(candles, i, cvd_window)
+        if (direction < 0 and cvd_bias <= -cvd_th) or (direction > 0 and cvd_bias >= cvd_th):
+            score += 1
+
+        vols = [max(c.volume, 0.0) for c in candles[i - impulse_window : i]]
+        z = self._zscore(vols, max(candles[i].volume, 0.0))
+        prev_close = candles[i - 1].close
+        move = 0.0 if prev_close <= 0 else (candles[i].close - prev_close) / prev_close
+        impulse_ok = z >= impulse_z and ((direction < 0 and move < -impulse_move_th) or (direction > 0 and move > impulse_move_th))
+        if impulse_ok:
+            score += 1
+
+        v_short = mean([max(c.volume, 0.0) for c in candles[i - oi_short + 1 : i + 1]])
+        v_long = mean([max(c.volume, 0.0) for c in candles[i - oi_long + 1 : i + 1]])
+        if v_long > 1e-12 and (v_short / v_long) >= 1.08:
+            score += 1
+
+        breakout_ref = hi if direction > 0 else lo
+        pulled_back = False
+        for k in range(i - pb_window + 1, i + 1):
+            c = candles[k]
+            if direction > 0:
+                if abs(c.low - breakout_ref) / px <= retest_tol and c.close >= breakout_ref:
+                    pulled_back = True
+                    break
+            else:
+                if abs(c.high - breakout_ref) / px <= retest_tol and c.close <= breakout_ref:
+                    pulled_back = True
+                    break
+        if pulled_back:
+            score += 1
+
+        last = candles[i]
+        body_dir_ok = (direction > 0 and last.close >= last.open) or (direction < 0 and last.close <= last.open)
+        if body_dir_ok:
+            score += 1
+
+        return score
+
+    def signal(self, candles: list[Candle], i: int) -> int:
+        min_score = int(self.params.get("min_score", 5))
+        long_score = self._score_direction(candles, i, 1)
+        short_score = self._score_direction(candles, i, -1)
+        if long_score < min_score and short_score < min_score:
+            return 0
+        if long_score == short_score:
+            return 0
+        return 1 if long_score > short_score else -1
+
+
 STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {}
 
 
@@ -492,8 +617,11 @@ for _builtin in [
     GridStrategy,
     TsmomStrategy,
     BreakoutMomentumOverlayStrategy,
+    ScalpingCryptoStrategy,
 ]:
     register_strategy_class(_builtin)
 
 # backward compatibility alias
 STRATEGY_REGISTRY["breakout"] = BreakoutStrategy
+
+STRATEGY_REGISTRY["scalping"] = ScalpingCryptoStrategy
