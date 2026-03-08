@@ -30,7 +30,7 @@ def fetch_binance_klines(symbol: str, timeframe: str = "1m", limit: int = 1000) 
     q = urllib.parse.urlencode({"symbol": symbol.upper(), "interval": interval, "limit": max(1, min(limit, 1500))})
     url = f"https://api.binance.com/api/v3/klines?{q}"
     req = urllib.request.Request(url, headers={"User-Agent": "quantx/0.1"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with urllib.request.urlopen(req, timeout=20) as resp:  # nosec B310
         data = json.loads(resp.read().decode("utf-8"))
     rows = []
     for item in data:

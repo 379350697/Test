@@ -205,7 +205,8 @@ class LiveExecutionService:
                 if attempt + 1 >= attempts:
                     break
                 time.sleep(self.config.retry_backoff_ms / 1000)
-        assert last_err is not None
+        if last_err is None:
+            raise RuntimeError("place_order_failed_without_exception")
         raise last_err
 
     def _client_order_id(self, symbol: str, idx: int) -> str:

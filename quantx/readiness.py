@@ -73,8 +73,7 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         has_oms_store,
         "JsonlOMSStore should be configured for crash recovery",
     )
-    if has_oms_store:
-        assert ctx.oms_store is not None
+    if has_oms_store and ctx.oms_store is not None:
         _append_check(
             checks,
             "oms_store_path_exists",

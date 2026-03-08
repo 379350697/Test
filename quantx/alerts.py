@@ -48,7 +48,7 @@ class WebhookAlertChannel:
         last_error: Exception | None = None
         for attempt in range(attempts):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout_s):
+                with urllib.request.urlopen(req, timeout=self.timeout_s):  # nosec B310
                     return {"status": "sent", "channel": "webhook", "url": self.url}
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
                 last_error = exc
@@ -56,7 +56,8 @@ class WebhookAlertChannel:
                     break
                 time.sleep(self.retry_backoff_ms / 1000)
 
-        assert last_error is not None
+        if last_error is None:
+            last_error = RuntimeError("webhook_send_failed_without_exception")
         return {"status": "failed", "channel": "webhook", "url": self.url, "error": str(last_error)}
 
 

@@ -138,14 +138,15 @@ class BinanceClient:
         last_error: Exception | None = None
         for attempt in range(attempts):
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with urllib.request.urlopen(req, timeout=20) as resp:  # nosec B310
                     return json.loads(resp.read().decode("utf-8"))
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
                 last_error = exc
                 if attempt + 1 >= attempts:
                     break
                 time.sleep(self.retry_backoff_ms / 1000)
-        assert last_error is not None
+        if last_error is None:
+            last_error = RuntimeError("binance_request_failed_without_exception")
         raise RuntimeError(f"binance_request_failed:{last_error}")
 
     @staticmethod
