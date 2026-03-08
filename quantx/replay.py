@@ -25,19 +25,30 @@ class DailyReplayReport:
     oms_event_counts: dict[str, int]
     audit_ok: bool
     audit_events: int
+    invalid_event_lines: int
 
 
 
-def _iter_jsonl(path: str) -> list[dict[str, Any]]:
+def _iter_jsonl(path: str) -> tuple[list[dict[str, Any]], int]:
     p = Path(path)
     if not p.exists():
-        return []
+        return [], 0
     rows: list[dict[str, Any]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        rows.append(json.loads(line))
-    return rows
+    invalid = 0
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                invalid += 1
+                continue
+            if isinstance(raw, dict):
+                rows.append(raw)
+            else:
+                invalid += 1
+    return rows, invalid
 
 
 def _same_day(ts: str, day: date) -> bool:
@@ -57,7 +68,8 @@ def build_daily_replay_report(
 ) -> dict[str, Any]:
     target_day = date.fromisoformat(day) if day else datetime.utcnow().date()
 
-    events = [r for r in _iter_jsonl(event_log_path) if _same_day(str(r.get("ts", "")), target_day)]
+    all_events, invalid_event_lines = _iter_jsonl(event_log_path)
+    events = [r for r in all_events if _same_day(str(r.get("ts", "")), target_day)]
 
     event_counter: Counter[str] = Counter()
     level_counter: Counter[str] = Counter()
@@ -96,7 +108,7 @@ def build_daily_replay_report(
     if audit_store_path:
         store = JsonlAuditStore(audit_store_path)
         audit_ok = store.verify()
-        audit_events = len(store.load())
+        audit_events = sum(1 for ev in store.load() if _same_day(ev.ts, target_day))
 
     report = DailyReplayReport(
         day=target_day.isoformat(),
@@ -109,5 +121,6 @@ def build_daily_replay_report(
         oms_event_counts=oms_event_counts,
         audit_ok=audit_ok,
         audit_events=audit_events,
+        invalid_event_lines=invalid_event_lines,
     )
     return asdict(report)
