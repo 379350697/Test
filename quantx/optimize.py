@@ -22,7 +22,7 @@ def random_scan(candles, strategy_name: str, param_space: dict[str, tuple], n_sa
     random.seed(seed)
     out = []
     for _ in range(n_samples):
-        params = {}
+        params: dict[str, object] = {}
         for k, bounds in param_space.items():
             lo, hi, tp = bounds
             if tp == "int":

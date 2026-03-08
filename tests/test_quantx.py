@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from quantx.abtest import run_ab_test
 from quantx.analytics import evaluate_targets, extended_metrics, monte_carlo_equity
 from quantx.backtest import run_backtest
@@ -14,17 +16,64 @@ from quantx.data import (
 from quantx.execution import PaperLiveExecutor
 from quantx.micro_backtest import run_orderbook_replay, run_tick_backtest
 from quantx.ml_adapter import online_update, simple_sentiment
-from quantx.models import BacktestConfig
+from quantx.models import BacktestConfig, Candle
 from quantx.monitoring import analyze_logs, monitor_equity
 from quantx.optimize import walk_forward
+from quantx.portfolio_opt import (
+    optimize_cta_portfolio_from_csv,
+    parse_returns_csv,
+    rolling_rebalance_cta_portfolio,
+)
 from quantx.reporting import write_report, write_report_payload
-from quantx.strategies import STRATEGY_REGISTRY
+from quantx.strategies import BreakoutStrategy, STRATEGY_REGISTRY
 from quantx.strategy_loader import load_strategy_repos
 
 
-def test_builtin_strategy_count():
-    assert len(STRATEGY_REGISTRY) == 7
+def test_builtin_strategy_registry_contains_core_and_aliases():
+    expected_core = {
+        "dca",
+        "ma_crossover",
+        "macd",
+        "cta_strategy",
+        "rsi_reversal",
+        "bollinger_bands",
+        "grid",
+        "tsmom",
+        "breakout_momo",
+    }
+    assert expected_core.issubset(set(STRATEGY_REGISTRY))
+    assert STRATEGY_REGISTRY["breakout"] is STRATEGY_REGISTRY["cta_strategy"]
 
+
+def test_cta_strategy_stable_config_has_required_guardrails():
+    lines = Path("quantx/configs/cta_strategy_stable.yaml").read_text(encoding="utf-8").splitlines()
+    kv = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        kv[key.strip()] = value.strip()
+
+    assert kv["strategy"] == "cta_strategy"
+    assert kv["timeframe"] == "4h"
+    assert float(kv["risk_per_trade"]) <= 0.01
+
+    clip = kv["leverage_clip"].strip("[]")
+    lo, hi = [float(x.strip()) for x in clip.split(",")]
+    assert lo >= 0.0
+    assert hi <= 8.0
+
+
+
+
+def test_breakout_strategy_default_lookback_is_applied_in_signal():
+    strategy = BreakoutStrategy()
+    candles = [
+        Candle(ts=f"t{i}", open=100 + i, high=101 + i, low=99 + i, close=100 + i, volume=1.0)
+        for i in range(80)
+    ]
+    assert strategy.signal(candles, 79) == 0
 
 def test_backtest_and_walk_forward(tmp_path):
     fp = generate_demo_data(str(tmp_path / "demo.csv"), bars=200)
@@ -127,3 +176,150 @@ def test_tick_orderbook_execution_monitor_ml_and_ab(tmp_path):
     candles = load_csv(generate_demo_data(str(tmp_path / "ab.csv"), bars=180))
     ab = run_ab_test(candles, ("ma_crossover", {"fast_period": 8, "slow_period": 21}), ("dca", {"buy_interval": 12, "buy_amount_usdt": 50}), BacktestConfig(symbol="BTCUSDT", timeframe="1h"))
     assert ab["winner"] in {"A", "B"}
+
+
+def test_parse_returns_csv_dedup_and_sort(tmp_path):
+    fp = tmp_path / "returns.csv"
+    fp.write_text(
+        "\n".join(
+            [
+                "ts,BTC,ETH",
+                "2024-01-02 00:00:00,0.01,0.02",
+                "2024-01-01 00:00:00,0.03,0.01",
+                "2024-01-02 00:00:00,0.02,0.03",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    snaps = parse_returns_csv(str(fp))
+    assert len(snaps) == 2
+    assert snaps[0].ts < snaps[1].ts
+    # duplicate timestamp keeps latest row
+    assert abs(snaps[1].values["BTC"] - 0.02) < 1e-12
+
+
+def test_optimize_cta_portfolio_from_csv_weights(tmp_path):
+    fp = tmp_path / "returns_opt.csv"
+    rows = ["ts,A,B,C"]
+    base = [0.01, 0.015, -0.005, 0.012, -0.006, 0.008, 0.011, -0.004]
+    for i, a in enumerate(base, start=1):
+        b = a * 0.9 + 0.0005
+        c = (-a) * 0.4 + 0.0003
+        rows.append(f"2024-01-{i:02d} 00:00:00,{a:.6f},{b:.6f},{c:.6f}")
+    fp.write_text("\n".join(rows), encoding="utf-8")
+
+    weights = optimize_cta_portfolio_from_csv(str(fp), corr_threshold=0.6)
+    assert set(weights) == {"A", "B", "C"}
+    assert abs(sum(weights.values()) - 1.0) < 1e-9
+    assert all(v >= 0.0 for v in weights.values())
+
+
+def test_parse_returns_csv_raises_when_ts_column_missing(tmp_path):
+    fp = tmp_path / "bad.csv"
+    fp.write_text("time,BTC\n2024-01-01 00:00:00,0.01\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing timestamp column"):
+        parse_returns_csv(str(fp))
+
+
+def test_parse_returns_csv_raises_when_no_asset_columns(tmp_path):
+    fp = tmp_path / "bad_no_asset.csv"
+    fp.write_text("ts\n2024-01-01 00:00:00\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no asset columns"):
+        parse_returns_csv(str(fp))
+
+
+def test_optimize_cta_portfolio_single_asset_is_full_weight(tmp_path):
+    fp = tmp_path / "single_asset.csv"
+    fp.write_text(
+        "\n".join(
+            [
+                "ts,BTC",
+                "2024-01-01 00:00:00,0.01",
+                "2024-01-02 00:00:00,-0.02",
+                "2024-01-03 00:00:00,0.03",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    weights = optimize_cta_portfolio_from_csv(str(fp))
+    assert weights == {"BTC": 1.0}
+
+
+def test_optimize_cta_portfolio_hierarchical_method(tmp_path):
+    fp = tmp_path / "returns_hier.csv"
+    rows = ["ts,A,B,C,D"]
+    base = [0.01, -0.02, 0.015, -0.005, 0.012, -0.009, 0.008, -0.011, 0.007, 0.004]
+    for i, a in enumerate(base, start=1):
+        b = a * 0.85 + 0.0002
+        c = -a * 0.20 + 0.0003
+        d = c * 0.80 - 0.0001
+        rows.append(f"2024-01-{i:02d} 00:00:00,{a:.6f},{b:.6f},{c:.6f},{d:.6f}")
+    fp.write_text("\n".join(rows), encoding="utf-8")
+
+    weights = optimize_cta_portfolio_from_csv(str(fp), cluster_method="hierarchical", corr_threshold=0.6)
+    assert set(weights) == {"A", "B", "C", "D"}
+    assert sum(abs(v) for v in weights.values()) > 0
+
+
+def test_optimize_cta_portfolio_target_vol_and_leverage_cap(tmp_path):
+    fp = tmp_path / "returns_scale.csv"
+    rows = ["ts,A,B,C"]
+    base = [0.02, -0.015, 0.03, -0.01, 0.018, -0.022, 0.017, -0.013, 0.016, -0.009, 0.014, -0.011]
+    for i, a in enumerate(base, start=1):
+        b = a * 0.7 + 0.001
+        c = -a * 0.3 + 0.0002
+        rows.append(f"2024-02-{i:02d} 00:00:00,{a:.6f},{b:.6f},{c:.6f}")
+    fp.write_text("\n".join(rows), encoding="utf-8")
+
+    weights = optimize_cta_portfolio_from_csv(
+        str(fp),
+        corr_threshold=0.6,
+        target_vol=0.30,
+        max_leverage=1.20,
+    )
+    leverage = sum(abs(v) for v in weights.values())
+    assert leverage <= 1.20 + 1e-9
+    assert leverage > 0
+
+
+def test_rolling_rebalance_cta_portfolio_monthly(tmp_path):
+    fp = tmp_path / "returns_roll.csv"
+    rows = ["ts,A,B,C"]
+    val = 0.01
+    for month in [1, 2, 3, 4]:
+        for day in [1, 5, 10, 15, 20, 25]:
+            a = val
+            b = a * 0.8 + 0.0004
+            c = -a * 0.25 + 0.0001
+            rows.append(f"2024-{month:02d}-{day:02d} 00:00:00,{a:.6f},{b:.6f},{c:.6f}")
+            val = -val * 0.9
+    fp.write_text("\n".join(rows), encoding="utf-8")
+
+    snaps = parse_returns_csv(str(fp))
+    plans = rolling_rebalance_cta_portfolio(
+        snapshots=snaps,
+        rebalance="monthly",
+        lookback=10,
+        corr_threshold=0.6,
+        target_vol=0.15,
+        max_leverage=1.10,
+    )
+
+    assert len(plans) >= 2
+    for p in plans:
+        assert "rebalance_ts" in p
+        assert set(p["weights"]) == {"A", "B", "C"}
+        assert p["leverage"] <= 1.10 + 1e-9
+
+
+def test_rolling_rebalance_invalid_frequency_raises(tmp_path):
+    fp = tmp_path / "returns_roll_bad.csv"
+    fp.write_text("ts,A\n2024-01-01 00:00:00,0.01\n2024-01-02 00:00:00,-0.02\n", encoding="utf-8")
+    snaps = parse_returns_csv(str(fp))
+
+    with pytest.raises(ValueError, match="rebalance must"):
+        rolling_rebalance_cta_portfolio(snaps, rebalance="weekly")  # type: ignore[arg-type]

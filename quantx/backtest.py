@@ -51,7 +51,7 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
     equity_curve: list[tuple[datetime, float]] = []
     drawdown_curve: list[tuple[datetime, float]] = []
     peak_eq = cash
-    orders_per_day = defaultdict(int)
+    orders_per_day: defaultdict[str, int] = defaultdict(int)
     last_trade_idx: int | None = None
     closed_pnls: list[float] = []
     entry_idx: int | None = None

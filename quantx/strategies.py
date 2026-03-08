@@ -267,11 +267,32 @@ class BreakoutStrategy(BaseStrategy):
     category = "trend"
     author = "quantx"
     description = "CTA趋势策略（原Breakout/Donchian）"
-    default_params = {"lookback": 20}
-    tags = ["breakout", "trend"]
+    default_params = {
+        "lookback": 200,
+        "donchian_exit_lookback": 50,
+        "adx_filter": 20,
+        "short_adx_filter": 25,
+        "adx_period": 14,
+        "atr_expansion": True,
+        "atr_period": 14,
+        "atr_ma_period": 50,
+        "atr_price_threshold": 0.004,
+        "atr_floor_mult": 0.8,
+        "min_vol": 0.0015,
+        "max_vol": 0.03,
+        "vol_window": 20,
+        "short_ma_period": 200,
+        "short_require_price_below_ma": True,
+        "risk_per_trade": 0.005,
+        "stop_atr_mult": 2.0,
+        "trail_atr_mult": 1.8,
+        "max_hold_bars": 18,
+        "max_position_pct": 0.0,
+    }
+    tags = ["breakout", "trend", "cta"]
 
     def signal(self, candles: list[Candle], i: int) -> int:
-        lookback = int(self.params.get("lookback", 20))
+        lookback = int(self.params.get("lookback", self.default_params["lookback"]))
         if i < lookback:
             return 0
         chunk = candles[i - lookback : i]

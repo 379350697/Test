@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 
-def monitor_equity(equity_curve: list[tuple[str, float]] | list[tuple[object, float]], dd_alert_pct: float = 10.0) -> dict:
+def monitor_equity(equity_curve: list[tuple[str, float]] | list[tuple[object, float]], dd_alert_pct: float = 10.0) -> dict[str, Any]:
     if not equity_curve:
         return {"alerts": [], "max_drawdown_pct": 0.0}
     peak = equity_curve[0][1]
@@ -18,8 +19,8 @@ def monitor_equity(equity_curve: list[tuple[str, float]] | list[tuple[object, fl
     return {"alerts": alerts, "max_drawdown_pct": round(max_dd, 4)}
 
 
-def analyze_logs(logs: list[str]) -> dict:
-    c = Counter()
+def analyze_logs(logs: list[str]) -> dict[str, Any]:
+    c: Counter[str] = Counter()
     for line in logs:
         lower = line.lower()
         if "error" in lower or "exception" in lower:

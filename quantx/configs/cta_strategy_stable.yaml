@@ -1,0 +1,57 @@
+strategy: cta_strategy
+timeframe: 4h
+
+universe:
+  symbols:
+    - BNBUSDT
+    - ARBUSDT
+    - SUIUSDT
+    - SOLUSDT
+    - AVAXUSDT
+    - XRPUSDT
+    - DOGEUSDT
+    - ETHUSDT
+    - BTCUSDT
+    - ADAUSDT
+    - ATOMUSDT
+    - ETCUSDT
+
+signal:
+  lookback: 200
+  donchian_exit_lookback: 50
+
+filters:
+  adx_filter: 20
+  short_adx_filter: 25
+  adx_period: 14
+
+  atr_expansion: true
+  atr_period: 14
+  atr_ma_period: 50
+  atr_price_threshold: 0.004
+  atr_floor_mult: 0.8
+
+  min_vol: 0.0015
+  max_vol: 0.03
+  vol_window: 20
+
+  short_ma_period: 200
+  short_require_price_below_ma: true
+
+risk_trade_level:
+  risk_per_trade: 0.005
+  stop_atr_mult: 2.0
+  trail_atr_mult: 1.8
+  max_hold_bars: 18
+  max_position_pct: 0.0
+
+portfolio:
+  weighting: inverse_volatility
+  rebalance: monthly
+  vol_target_window: 30
+  target_vol: 0.10
+  leverage_clip: [0.25, 8.0]
+
+execution_assumption:
+  fee_model: exchange_default
+  slippage_model: conservative

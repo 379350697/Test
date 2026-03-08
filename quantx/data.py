@@ -92,9 +92,9 @@ def generate_demo_data(path: str, bars: int = 1000, seed: int = 7) -> str:
             o = price
             c = max(1.0, price * (1 + drift))
             h = max(o, c) * (1 + random.uniform(0, 0.005))
-            l = min(o, c) * (1 - random.uniform(0, 0.005))
+            low_price = min(o, c) * (1 - random.uniform(0, 0.005))
             v = random.uniform(100, 500)
-            writer.writerow([ts.isoformat(), f"{o:.4f}", f"{h:.4f}", f"{l:.4f}", f"{c:.4f}", f"{v:.4f}"])
+            writer.writerow([ts.isoformat(), f"{o:.4f}", f"{h:.4f}", f"{low_price:.4f}", f"{c:.4f}", f"{v:.4f}"])
             ts += timedelta(hours=1)
             price = c
     return str(p)

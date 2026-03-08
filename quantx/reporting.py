@@ -57,7 +57,7 @@ def _render_payload(payload: dict, out_dir: str) -> dict:
     md_path.write_text("\n".join(md), encoding="utf-8")
 
     try:
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # type: ignore[import-not-found]
 
         ys = [y for _, y in payload["equity_curve"]]
         plt.figure(figsize=(10, 4))

@@ -18,3 +18,26 @@ include-package-data = true
 where = ["."]
 include = ["quantx*"]
 exclude = ["tests*", "src*"]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9",
+    "pytest-cov>=7",
+    "ruff>=0.8",
+    "mypy>=1.10",
+]
+
+
+[tool.pytest.ini_options]
+addopts = "--cov=quantx --cov-report=term-missing --cov-fail-under=47 -q"
+
+
+[tool.coverage.run]
+branch = true
+source = ["quantx"]
+
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
