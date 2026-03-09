@@ -351,3 +351,38 @@ def test_rolling_rebalance_invalid_frequency_raises(tmp_path):
 
     with pytest.raises(ValueError, match="rebalance must"):
         rolling_rebalance_cta_portfolio(snaps, rebalance="weekly")  # type: ignore[arg-type]
+
+def test_backtest_cached_path_matches_reference_results(tmp_path):
+    candles = load_csv(generate_demo_data(str(tmp_path / "parity.csv"), bars=240))
+    cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
+    params = {"fast_period": 8, "slow_period": 21, "signal_period": 5}
+
+    reference = run_backtest(candles, "macd", params, cfg)
+    candidate = run_backtest(candles, "macd", params, cfg, use_indicator_cache=True)
+
+    assert [t.side for t in candidate.trades] == [t.side for t in reference.trades]
+    assert candidate.metrics == reference.metrics
+
+def test_indicator_cache_matches_existing_indicator_values(tmp_path):
+    from quantx.indicator_cache import IndicatorCache
+
+    candles = load_csv(generate_demo_data(str(tmp_path / "cache.csv"), bars=200))
+    cache = IndicatorCache.from_candles(candles)
+
+    assert cache.sma(21)[50] is not None
+    assert cache.atr(14)[50] is not None
+    assert cache.adx(14)[50] is not None
+
+def test_batch_summary_mode_omits_heavy_fields(tmp_path):
+    from quantx.cli import main
+
+    fp = generate_demo_data(str(tmp_path / "batch.csv"), bars=180)
+    payload = main([
+        "batch",
+        "--file", fp,
+        "--strategies", '[["dca", {"buy_interval": 12, "buy_amount_usdt": 20}]]',
+        "--json",
+        "--result-mode", "summary",
+    ])
+
+    assert "equity_curve" not in payload["results"][0]

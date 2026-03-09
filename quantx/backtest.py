@@ -9,6 +9,7 @@ from statistics import mean
 
 from .models import BacktestConfig, BacktestResult, Position, RunMetadata, Trade
 from .analytics import evaluate_targets, extended_metrics
+from .indicator_cache import IndicatorCache
 from .repro import now_utc_iso, python_fingerprint, stable_hash
 from .strategies import get_strategy_class
 from .strategy_loader import load_strategy_repos
@@ -41,9 +42,19 @@ def _stability_score(metrics: dict[str, float], n_trades: int) -> tuple[dict[str
     return breakdown, total
 
 
-def run_backtest(candles, strategy_name: str, strategy_params: dict, config: BacktestConfig) -> BacktestResult:
+def run_backtest(
+    candles,
+    strategy_name: str,
+    strategy_params: dict,
+    config: BacktestConfig,
+    *,
+    use_indicator_cache: bool = False,
+    data_hash: str | None = None,
+) -> BacktestResult:
     strategy_cls = get_strategy_class(strategy_name)
     strategy = strategy_cls(**strategy_params)
+    indicator_cache = IndicatorCache.from_candles(candles) if use_indicator_cache else None
+    strategy.indicator_cache = indicator_cache
 
     cash = config.initial_cash
     pos = Position(config.symbol)
@@ -67,7 +78,9 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
         # shared ATR (used by exits and position sizing)
         atr_val = 0.0
         atr_period = int(strategy_params.get("atr_period", 14) or 14)
-        if i >= atr_period:
+        if indicator_cache is not None:
+            atr_val = indicator_cache.atr(atr_period)[i] or 0.0
+        elif i >= atr_period:
             trs = []
             for k in range(i - atr_period + 1, i + 1):
                 prev_close = candles[k - 1].close if k > 0 else candles[k].close
@@ -180,32 +193,39 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
 
                 cond_adx = False
                 if short_adx_filter > 0 and i >= atr_period + 1:
-                    trs, pdms, ndms = [], [], []
                     p = int(strategy_params.get("adx_period", 14) or 14)
                     if i >= p + 1:
-                        for k in range(i - p + 1, i + 1):
-                            cur = candles[k]
-                            prev = candles[k - 1]
-                            up_move = cur.high - prev.high
-                            down_move = prev.low - cur.low
-                            pdm = up_move if (up_move > down_move and up_move > 0) else 0.0
-                            ndm = down_move if (down_move > up_move and down_move > 0) else 0.0
-                            tr = max(cur.high - cur.low, abs(cur.high - prev.close), abs(cur.low - prev.close))
-                            trs.append(tr)
-                            pdms.append(pdm)
-                            ndms.append(ndm)
-                        atr_adx = mean(trs) if trs else 0.0
-                        if atr_adx > 1e-12:
-                            pdi = 100.0 * (mean(pdms) / atr_adx)
-                            ndi = 100.0 * (mean(ndms) / atr_adx)
-                            denom = pdi + ndi
-                            adx_val = 100.0 * abs(pdi - ndi) / denom if denom > 1e-12 else 0.0
-                            cond_adx = adx_val > short_adx_filter
+                        if indicator_cache is not None:
+                            adx_val = indicator_cache.adx(p)[i]
+                            cond_adx = (adx_val or 0.0) > short_adx_filter
+                        else:
+                            trs, pdms, ndms = [], [], []
+                            for k in range(i - p + 1, i + 1):
+                                cur = candles[k]
+                                prev = candles[k - 1]
+                                up_move = cur.high - prev.high
+                                down_move = prev.low - cur.low
+                                pdm = up_move if (up_move > down_move and up_move > 0) else 0.0
+                                ndm = down_move if (down_move > up_move and down_move > 0) else 0.0
+                                tr = max(cur.high - cur.low, abs(cur.high - prev.close), abs(cur.low - prev.close))
+                                trs.append(tr)
+                                pdms.append(pdm)
+                                ndms.append(ndm)
+                            atr_adx = mean(trs) if trs else 0.0
+                            if atr_adx > 1e-12:
+                                pdi = 100.0 * (mean(pdms) / atr_adx)
+                                ndi = 100.0 * (mean(ndms) / atr_adx)
+                                denom = pdi + ndi
+                                adx_val = 100.0 * abs(pdi - ndi) / denom if denom > 1e-12 else 0.0
+                                cond_adx = adx_val > short_adx_filter
 
                 cond_ma = False
                 if require_price_below_ma and i >= short_ma_period:
-                    ma = mean([x.close for x in candles[i - short_ma_period + 1 : i + 1]])
-                    cond_ma = c.close < ma
+                    if indicator_cache is not None:
+                        ma = indicator_cache.sma(short_ma_period)[i]
+                    else:
+                        ma = mean([x.close for x in candles[i - short_ma_period + 1 : i + 1]])
+                    cond_ma = ma is not None and c.close < ma
 
                 # OR condition: ADX > gate OR price < MA200
                 allow_short_open = cond_adx or cond_ma
@@ -262,22 +282,27 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
                 if risk_per_trade > 0 and stop_atr_mult > 0 and atr_val > 0:
                     atr_eff = atr_val
                     if atr_floor_mult > 0:
-                        atr_hist = []
-                        for k in range(i - atr_ma_period + 1, i + 1):
-                            if k < 0:
-                                continue
-                            trs2 = []
-                            if k >= atr_period:
-                                for kk in range(k - atr_period + 1, k + 1):
-                                    prev_close2 = candles[kk - 1].close if kk > 0 else candles[kk].close
-                                    tr2 = max(
-                                        candles[kk].high - candles[kk].low,
-                                        abs(candles[kk].high - prev_close2),
-                                        abs(candles[kk].low - prev_close2),
-                                    )
-                                    trs2.append(tr2)
-                            if trs2:
-                                atr_hist.append(mean(trs2))
+                        if indicator_cache is not None:
+                            atr_series = indicator_cache.atr(atr_period)
+                            start = max(0, i - atr_ma_period + 1)
+                            atr_hist = [v for v in atr_series[start : i + 1] if v is not None]
+                        else:
+                            atr_hist = []
+                            for k in range(i - atr_ma_period + 1, i + 1):
+                                if k < 0:
+                                    continue
+                                trs2 = []
+                                if k >= atr_period:
+                                    for kk in range(k - atr_period + 1, k + 1):
+                                        prev_close2 = candles[kk - 1].close if kk > 0 else candles[kk].close
+                                        tr2 = max(
+                                            candles[kk].high - candles[kk].low,
+                                            abs(candles[kk].high - prev_close2),
+                                            abs(candles[kk].low - prev_close2),
+                                        )
+                                        trs2.append(tr2)
+                                if trs2:
+                                    atr_hist.append(mean(trs2))
                         if atr_hist:
                             atr_ma = mean(atr_hist)
                             atr_floor = atr_ma * atr_floor_mult
@@ -355,7 +380,7 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
         strategy_spec_hash=stable_hash(strategy_profile),
         strategy_source_hash=strategy_cls.source_hash(),
         param_hash=stable_hash(strategy_params),
-        data_hash=stable_hash([(c.ts.isoformat(), c.open, c.high, c.low, c.close, c.volume) for c in candles]),
+        data_hash=data_hash if data_hash is not None else stable_hash([(c.ts.isoformat(), c.open, c.high, c.low, c.close, c.volume) for c in candles]),
         python_version=python_fingerprint(),
         created_at=now_utc_iso(),
     )
@@ -373,11 +398,11 @@ def run_backtest(candles, strategy_name: str, strategy_params: dict, config: Bac
 
 
 def _run_job(job):
-    candles, strategy_name, params, config_dict, strategy_repo_paths = job
+    candles, strategy_name, params, config_dict, strategy_repo_paths, use_indicator_cache, data_hash = job
     if strategy_repo_paths:
         load_strategy_repos(strategy_repo_paths)
     config = BacktestConfig(**config_dict)
-    return run_backtest(candles, strategy_name, params, config)
+    return run_backtest(candles, strategy_name, params, config, use_indicator_cache=use_indicator_cache, data_hash=data_hash)
 
 
 def run_parallel_matrix(
@@ -386,27 +411,48 @@ def run_parallel_matrix(
     config_template: dict,
     max_workers: int = 4,
     strategy_repo_paths: list[str] | None = None,
+    use_indicator_cache: bool = False,
 ):
     jobs = []
     for (symbol, tf), candles in candles_by_symbol_tf.items():
+        job_data_hash = stable_hash([(c.ts.isoformat(), c.open, c.high, c.low, c.close, c.volume) for c in candles])
         for strategy_name, params in strategy_grid:
             cfg = dict(config_template)
             cfg["symbol"] = symbol
             cfg["timeframe"] = tf
-            jobs.append((candles, strategy_name, params, cfg, strategy_repo_paths or []))
-    with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        results = list(ex.map(_run_job, jobs))
-    return results
+            jobs.append((candles, strategy_name, params, cfg, strategy_repo_paths or [], use_indicator_cache, job_data_hash))
+    if max_workers <= 1:
+        return [_run_job(job) for job in jobs]
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            return list(ex.map(_run_job, jobs))
+    except OSError:
+        return [_run_job(job) for job in jobs]
 
 
-def result_to_dict(res: BacktestResult) -> dict:
-    return {
+def result_to_dict(res: BacktestResult, mode: str = "full") -> dict:
+    if mode not in {"full", "summary", "minimal"}:
+        raise ValueError(f"unsupported result mode: {mode}")
+
+    payload = {
         "config": asdict(res.config),
         "metadata": asdict(res.metadata),
         "metrics": res.metrics,
         "score": {"total": res.score_total, "breakdown": res.score_breakdown},
-        "trades": [asdict(t) for t in res.trades],
-        "equity_curve": [(t.isoformat(), v) for t, v in res.equity_curve],
-        "drawdown_curve": [(t.isoformat(), v) for t, v in res.drawdown_curve],
-        "extra": res.extra,
     }
+    if mode == "minimal":
+        return payload
+    if mode == "summary":
+        payload["trade_count"] = len(res.trades)
+        payload["last_trade"] = asdict(res.trades[-1]) if res.trades else None
+        return payload
+
+    payload.update(
+        {
+            "trades": [asdict(t) for t in res.trades],
+            "equity_curve": [(t.isoformat(), v) for t, v in res.equity_curve],
+            "drawdown_curve": [(t.isoformat(), v) for t, v in res.drawdown_curve],
+            "extra": res.extra,
+        }
+    )
+    return payload

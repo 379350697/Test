@@ -15,7 +15,7 @@ def scan_watchlist(watchlist_data: dict, strategy_name: str, params: dict, base_
             slippage_pct=base_config.slippage_pct,
             risk=base_config.risk,
         )
-        res = run_backtest(candles, strategy_name, params, cfg)
+        res = run_backtest(candles, strategy_name, params, cfg, use_indicator_cache=True)
         last_signal = "neutral"
         if res.trades:
             last_signal = "buy" if res.trades[-1].side == "BUY" else "sell"

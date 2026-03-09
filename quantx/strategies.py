@@ -21,6 +21,7 @@ class BaseStrategy:
 
     def __init__(self, **params):
         self.params = {**self.default_params, **params}
+        self.indicator_cache = None
 
     def signal(self, candles: list[Candle], i: int) -> int:
         raise NotImplementedError
@@ -138,15 +139,16 @@ def _atr(candles: list[Candle], i: int, period: int = 14) -> float | None:
     return mean(trs) if trs else None
 
 
-def pass_common_filters(candles: list[Candle], i: int, params: dict[str, Any]) -> bool:
+def pass_common_filters(candles: list[Candle], i: int, params: dict[str, Any], cache=None) -> bool:
     adx_gate = float(params.get("adx_filter", 0) or 0)
     if adx_gate > 0:
-        av = adx(candles, i, int(params.get("adx_period", 14) or 14))
+        adx_period = int(params.get("adx_period", 14) or 14)
+        av = cache.adx(adx_period)[i] if cache is not None else adx(candles, i, adx_period)
         if av is None or av < adx_gate:
             return False
 
-    closes = [c.close for c in candles[: i + 1]]
-    vol = realized_vol(closes, int(params.get("vol_window", 20) or 20))
+    vol_window = int(params.get("vol_window", 20) or 20)
+    vol = cache.realized_vol(vol_window)[i] if cache is not None else realized_vol([c.close for c in candles[: i + 1]], vol_window)
     min_vol = float(params.get("min_vol", 0) or 0)
     max_vol = float(params.get("max_vol", 0) or 0)
     if vol is not None:
@@ -160,16 +162,24 @@ def pass_common_filters(candles: list[Candle], i: int, params: dict[str, Any]) -
     if bool(params.get("atr_expansion", False)):
         atr_p = int(params.get("atr_period", 14) or 14)
         atr_ma_p = int(params.get("atr_ma_period", 50) or 50)
-        cur_atr = _atr(candles, i, atr_p)
-        if cur_atr is None:
-            return False
-        atr_hist = []
-        for k in range(i - atr_ma_p + 1, i + 1):
-            if k < 0:
-                continue
-            v = _atr(candles, k, atr_p)
-            if v is not None:
-                atr_hist.append(v)
+        if cache is not None:
+            atr_series = cache.atr(atr_p)
+            cur_atr = atr_series[i]
+            if cur_atr is None:
+                return False
+            start = max(0, i - atr_ma_p + 1)
+            atr_hist = [v for v in atr_series[start : i + 1] if v is not None]
+        else:
+            cur_atr = _atr(candles, i, atr_p)
+            if cur_atr is None:
+                return False
+            atr_hist = []
+            for k in range(i - atr_ma_p + 1, i + 1):
+                if k < 0:
+                    continue
+                v = _atr(candles, k, atr_p)
+                if v is not None:
+                    atr_hist.append(v)
         if len(atr_hist) < max(5, atr_ma_p // 2):
             return False
         atr_ma = mean(atr_hist)
@@ -181,7 +191,7 @@ def pass_common_filters(candles: list[Candle], i: int, params: dict[str, Any]) -
     if atr_price_threshold > 0:
         if cur_atr is None:
             atr_p = int(params.get("atr_period", 14) or 14)
-            cur_atr = _atr(candles, i, atr_p)
+            cur_atr = cache.atr(atr_p)[i] if cache is not None else _atr(candles, i, atr_p)
         if cur_atr is None or candles[i].close <= 0:
             return False
         if (cur_atr / candles[i].close) <= atr_price_threshold:
@@ -216,14 +226,21 @@ class MaCrossoverStrategy(BaseStrategy):
         fast_p = int(self.params.get("fast_period", 10))
         slow_p = int(self.params.get("slow_period", 30))
         mtype = self.params.get("ma_type", "sma")
-        closes = [c.close for c in candles[: i + 1]]
-        fn = ema if mtype == "ema" else sma
-        f = fn(closes, fast_p)
-        s = fn(closes, slow_p)
+        cache = getattr(self, "indicator_cache", None)
+        if cache is not None:
+            fast_series = cache.ema(fast_p) if mtype == "ema" else cache.sma(fast_p)
+            slow_series = cache.ema(slow_p) if mtype == "ema" else cache.sma(slow_p)
+            f = fast_series[i]
+            s = slow_series[i]
+        else:
+            closes = [c.close for c in candles[: i + 1]]
+            fn = ema if mtype == "ema" else sma
+            f = fn(closes, fast_p)
+            s = fn(closes, slow_p)
         if f is None or s is None:
             return 0
         sig = 1 if f > s else -1
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return sig
 
@@ -240,24 +257,38 @@ class MacdStrategy(BaseStrategy):
         fast = int(self.params.get("fast_period", 12))
         slow = int(self.params.get("slow_period", 26))
         sig = int(self.params.get("signal_period", 9))
-        closes = [c.close for c in candles[: i + 1]]
-        if len(closes) < slow + sig:
-            return 0
-        macd_series = []
-        for j in range(slow, len(closes) + 1):
-            part = closes[:j]
-            ef = ema(part, fast)
-            es = ema(part, slow)
-            if ef is None or es is None:
-                continue
-            macd_series.append(ef - es)
+        cache = getattr(self, "indicator_cache", None)
+        if cache is not None:
+            if (i + 1) < slow + sig:
+                return 0
+            fast_series = cache.ema(fast)
+            slow_series = cache.ema(slow)
+            macd_series = []
+            for idx in range(slow - 1, i + 1):
+                ef = fast_series[idx]
+                es = slow_series[idx]
+                if ef is None or es is None:
+                    continue
+                macd_series.append(ef - es)
+        else:
+            closes = [c.close for c in candles[: i + 1]]
+            if len(closes) < slow + sig:
+                return 0
+            macd_series = []
+            for j in range(slow, len(closes) + 1):
+                part = closes[:j]
+                ef = ema(part, fast)
+                es = ema(part, slow)
+                if ef is None or es is None:
+                    continue
+                macd_series.append(ef - es)
         if len(macd_series) < sig:
             return 0
         signal_line = ema(macd_series, sig)
         if signal_line is None:
             return 0
         sig = 1 if macd_series[-1] > signal_line else -1
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return sig
 
@@ -306,7 +337,7 @@ class BreakoutStrategy(BaseStrategy):
             sig = -1
         if sig == 0:
             return 0
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return sig
 
@@ -323,8 +354,8 @@ class RsiReversalStrategy(BaseStrategy):
         period = int(self.params.get("rsi_period", 14))
         oversold = float(self.params.get("oversold", 30))
         overbought = float(self.params.get("overbought", 70))
-        closes = [c.close for c in candles[: i + 1]]
-        rv = rsi(closes, period)
+        cache = getattr(self, "indicator_cache", None)
+        rv = cache.rsi(period)[i] if cache is not None else rsi([c.close for c in candles[: i + 1]], period)
         if rv is None:
             return 0
         sig = 0
@@ -334,7 +365,7 @@ class RsiReversalStrategy(BaseStrategy):
             sig = -1
         if sig == 0:
             return 0
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return sig
 
@@ -350,7 +381,8 @@ class BollingerBandsStrategy(BaseStrategy):
     def signal(self, candles: list[Candle], i: int) -> int:
         p = int(self.params.get("bb_period", 20))
         std = float(self.params.get("bb_std", 2.0))
-        closes = [c.close for c in candles[: i + 1]]
+        cache = getattr(self, "indicator_cache", None)
+        closes = cache.closes[i - p + 1 : i + 1] if cache is not None and i >= p - 1 else [c.close for c in candles[: i + 1]]
         if len(closes) < p:
             return 0
         m = mean(closes[-p:])
@@ -365,7 +397,7 @@ class BollingerBandsStrategy(BaseStrategy):
             sig = -1
         if sig == 0:
             return 0
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return sig
 
@@ -421,7 +453,7 @@ class TsmomStrategy(BaseStrategy):
 
         if sig == 0:
             return 0
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return sig
 
@@ -456,7 +488,7 @@ class BreakoutMomentumOverlayStrategy(BaseStrategy):
 
         if not long_sig and not short_sig:
             return 0
-        if not pass_common_filters(candles, i, self.params):
+        if not pass_common_filters(candles, i, self.params, cache=getattr(self, "indicator_cache", None)):
             return 0
         return 1 if long_sig else -1
 

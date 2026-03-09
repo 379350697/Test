@@ -169,6 +169,7 @@ def build_parser():
     bm.add_argument("--symbols", default='["BTCUSDT"]')
     bm.add_argument("--timeframes", default='["1h"]')
     bm.add_argument("--workers", type=int, default=2)
+    bm.add_argument("--result-mode", choices=["full", "summary", "minimal"], default="full")
     _attach_strategy_repo_args(bm)
     bm.add_argument("--json", action="store_true")
 
@@ -321,9 +322,21 @@ def main(argv=None):
         symbols = json.loads(args.symbols)
         tfs = json.loads(args.timeframes)
         data_map = {(s, tf): candles for s in symbols for tf in tfs}
-        results = run_parallel_matrix(data_map, strategies, {"symbol": "", "timeframe": ""}, max_workers=args.workers, strategy_repo_paths=args.strategy_repo)
-        _print({"count": len(results), "results": [result_to_dict(r) for r in results], "custom_loaded": load_info}, args.json)
-        return
+        results = run_parallel_matrix(
+            data_map,
+            strategies,
+            {"symbol": "", "timeframe": ""},
+            max_workers=args.workers,
+            strategy_repo_paths=args.strategy_repo,
+            use_indicator_cache=True,
+        )
+        payload = {
+            "count": len(results),
+            "results": [result_to_dict(r, mode=args.result_mode) for r in results],
+            "custom_loaded": load_info,
+        }
+        _print(payload, args.json)
+        return payload
     if args.cmd == "optimize":
         candles = load_csv(args.file)
         cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
