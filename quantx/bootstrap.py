@@ -70,7 +70,8 @@ def bootstrap_recover_and_reconcile(
 
     snapshot = service.reconcile(symbol)
     remote_positions_raw: dict[str, float] = {}
-    for row in snapshot.get("positions", []):
+    position_rows = snapshot.get("runtime_positions") or snapshot.get("positions", [])
+    for row in position_rows:
         sym = str(row.get("symbol", "")).upper()
         if not sym:
             continue

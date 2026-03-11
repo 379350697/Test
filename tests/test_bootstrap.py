@@ -55,3 +55,31 @@ def test_bootstrap_recover_and_reconcile_detects_mismatch(tmp_path):
     assert rep["missing_on_exchange"] == ["o-open"]
     assert rep["unmanaged_on_exchange"] == ["remote-only"]
     assert "position_mismatch_detected" in rep["notes"]
+
+
+def test_bootstrap_recover_and_reconcile_prefers_runtime_positions_over_raw_assets(monkeypatch):
+    class _RecoveredOrderManager:
+        def __init__(self):
+            self.ledger = type('Ledger', (), {'positions': {'BTC-USDT-SWAP': 0.1}})()
+
+        def list_working_order_ids(self):
+            return []
+
+        def list_orders(self):
+            return ['o-filled']
+
+    monkeypatch.setattr(OrderManager, 'recover', staticmethod(lambda store, initial_cash=0.0: _RecoveredOrderManager()))
+
+    svc = _StubService(
+        {
+            'open_orders': [],
+            'positions': [{'symbol': 'USDT', 'qty': 1000.0}],
+            'runtime_positions': [{'symbol': 'BTC-USDT-SWAP', 'position_side': 'long', 'qty': 0.1}],
+            'symbol_rules': {},
+        }
+    )
+
+    rep = bootstrap_recover_and_reconcile(service=svc, oms_store=object(), initial_cash=1000.0)
+    assert rep['ok'] is True
+    assert rep['exchange_positions']['BTC-USDT-SWAP'] == 0.1
+    assert rep['position_diffs'] == {}
