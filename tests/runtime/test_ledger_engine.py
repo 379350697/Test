@@ -105,3 +105,52 @@ def test_ledger_engine_applies_funding_without_bypassing_position_legs():
 
     assert leg.funding_total == pytest.approx(-2.5)
     assert ledger.wallet_balance == pytest.approx(997.5)
+
+
+def test_runtime_risk_rejects_invalid_position_side_and_bad_reduce_only():
+    from quantx.runtime.models import AccountLedger, OrderIntent, PositionLeg
+    from quantx.runtime.runtime_risk import RuntimeRiskLimits, RuntimeRiskValidator
+
+    ledger = AccountLedger(
+        wallet_balance=1000.0,
+        equity=1000.0,
+        available_margin=800.0,
+        used_margin=200.0,
+        maintenance_margin=50.0,
+        risk_ratio=0.05,
+        positions={
+            ('BTC-USDT-SWAP', 'long'): PositionLeg(
+                symbol='BTC-USDT-SWAP',
+                position_side='long',
+                qty=1.0,
+                avg_entry_price=100.0,
+            )
+        },
+    )
+    validator = RuntimeRiskValidator(RuntimeRiskLimits())
+
+    bad_side = OrderIntent(
+        symbol='BTC-USDT-SWAP',
+        side='buy',
+        position_side='net',
+        qty=0.2,
+        price=101.0,
+        order_type='limit',
+        time_in_force='gtc',
+        reduce_only=False,
+    )
+    ok, reason = validator.validate_intent(bad_side, ledger)
+    assert not ok and reason == 'invalid_position_side'
+
+    bad_reduce = OrderIntent(
+        symbol='BTC-USDT-SWAP',
+        side='buy',
+        position_side='long',
+        qty=0.2,
+        price=101.0,
+        order_type='limit',
+        time_in_force='gtc',
+        reduce_only=True,
+    )
+    ok, reason = validator.validate_intent(bad_reduce, ledger)
+    assert not ok and reason == 'reduce_only_would_increase_position'

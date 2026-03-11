@@ -388,3 +388,32 @@ def test_live_service_auto_switches_to_dry_run_after_consecutive_failures():
 
     events = [e for e in logger.events if e.event == "execution_degraded_to_dry_run"]
     assert len(events) >= 1
+
+
+def test_runtime_risk_health_checks_cross_margin_account_state():
+    from quantx.runtime.models import AccountLedger
+    from quantx.runtime.runtime_risk import RuntimeRiskLimits, RuntimeRiskValidator
+    from quantx.risk_engine import check_cross_margin_health
+
+    ledger = AccountLedger(
+        wallet_balance=1000.0,
+        equity=950.0,
+        available_margin=-5.0,
+        used_margin=955.0,
+        maintenance_margin=120.0,
+        risk_ratio=0.126,
+    )
+    validator = RuntimeRiskValidator(
+        RuntimeRiskLimits(min_available_margin=0.0, max_risk_ratio=0.1)
+    )
+
+    ok, reason = validator.check_account_health(ledger)
+    assert not ok and reason == 'available_margin_below_floor'
+
+    ok, reason = check_cross_margin_health(
+        available_margin=100.0,
+        risk_ratio=0.2,
+        min_available_margin=0.0,
+        max_risk_ratio=0.1,
+    )
+    assert not ok and reason == 'risk_ratio_exceeded'

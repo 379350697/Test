@@ -105,3 +105,16 @@ def exposure_by_symbol(positions: dict[str, float], prices: dict[str, float], eq
         return {"equity": equity, "notionals": notionals, "weights": {k: 0.0 for k in notionals}}
     weights = {k: v / equity for k, v in notionals.items()}
     return {"equity": equity, "notionals": notionals, "weights": weights}
+
+
+def check_cross_margin_health(
+    available_margin: float,
+    risk_ratio: float,
+    min_available_margin: float = 0.0,
+    max_risk_ratio: float = 0.5,
+) -> tuple[bool, str]:
+    if available_margin < min_available_margin - 1e-12:
+        return False, 'available_margin_below_floor'
+    if risk_ratio > max_risk_ratio + 1e-12:
+        return False, 'risk_ratio_exceeded'
+    return True, 'ok'
