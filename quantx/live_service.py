@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import time
 from typing import Any
@@ -39,6 +39,7 @@ class LiveExecutionService:
         trading_constraints: TradingConstraints | None = None,
         config: LiveExecutionConfig | None = None,
         event_logger: EventLogger | None = None,
+        runtime_adapter: Any | None = None,
     ):
         self.client = client
         self.risk_limits = risk_limits or RiskLimits()
@@ -46,6 +47,7 @@ class LiveExecutionService:
         self.config = config or LiveExecutionConfig()
         self.symbol_rules: dict[str, SymbolRule] = {}
         self.event_logger = event_logger
+        self.runtime_adapter = runtime_adapter
         self._consecutive_failures = 0
 
     def _log(
@@ -114,6 +116,7 @@ class LiveExecutionService:
     def execute_orders(self, orders: list[dict[str, Any]]) -> dict[str, Any]:
         accepted: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
+        runtime_events: list[dict[str, Any]] = []
 
         total_notional = sum(abs(float(od.get("qty", 0.0)) * float(od.get("price", 0.0))) for od in orders)
         if self.config.max_orders_per_cycle is not None and len(orders) > self.config.max_orders_per_cycle:
@@ -155,6 +158,8 @@ class LiveExecutionService:
                     continue
 
             client_order_id = self._client_order_id(symbol=symbol, idx=idx)
+            position_side = str(od.get("position_side", "long" if side == "BUY" else "short")).lower()
+            margin_mode = str(od.get("margin_mode", "cross")).lower()
             order = ExchangeOrder(
                 client_order_id=client_order_id,
                 symbol=symbol,
@@ -162,16 +167,22 @@ class LiveExecutionService:
                 qty=qty,
                 order_type="LIMIT" if price > 0 else "MARKET",
                 price=price if price > 0 else None,
+                position_side=position_side,
+                margin_mode=margin_mode,
+                reduce_only=bool(od.get("reduce_only", False)),
             )
 
             if self.config.dry_run:
-                accepted.append({"order": od, "result": {"accepted": True, "dry_run": True, "clientOrderId": client_order_id}})
+                dry_run_res = {"accepted": True, "dry_run": True, "clientOrderId": client_order_id}
+                accepted.append({"order": od, "result": dry_run_res})
                 self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": True, "exchange": type(self.client).__name__, "order": od})
                 continue
 
             try:
                 res = self._place_with_retry(order)
                 accepted.append({"order": od, "result": res})
+                if self.runtime_adapter is not None:
+                    runtime_events.append(asdict(self.runtime_adapter.normalize_place_order_response(order, res, ts=datetime.now(tz=timezone.utc).isoformat())))
                 self._consecutive_failures = 0
                 self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": False, "exchange": type(self.client).__name__, "result": res})
             except Exception as exc:  # noqa: BLE001
@@ -217,12 +228,29 @@ class LiveExecutionService:
                         },
                     )
 
-        return {"accepted": accepted, "rejected": rejected, "ok": len(rejected) == 0}
+        return {"accepted": accepted, "rejected": rejected, "runtime_events": runtime_events, "ok": len(rejected) == 0}
 
     def reconcile(self, symbol: str | None = None) -> dict[str, Any]:
+        runtime_events: list[dict[str, Any]] = []
+        if self.runtime_adapter is not None and hasattr(self.client, "get_raw_open_orders"):
+            raw_open_orders = self.client.get_raw_open_orders(symbol)
+            open_orders = self.runtime_adapter.normalize_open_orders(raw_open_orders)
+            runtime_events.extend(asdict(self.runtime_adapter.normalize_order_event(row)) for row in raw_open_orders)
+        else:
+            open_orders = self.client.get_open_orders(symbol)
+
+        if self.runtime_adapter is not None and hasattr(self.client, "get_raw_account_positions"):
+            raw_positions = self.client.get_raw_account_positions(symbol)
+            positions = self.runtime_adapter.normalize_positions(raw_positions)
+            runtime_events.extend(asdict(self.runtime_adapter.normalize_position_event(row)) for row in raw_positions)
+        else:
+            positions = [{"symbol": p.symbol, "qty": p.qty} for p in self.client.get_account_positions()]
+
         snapshot = {
-            "open_orders": self.client.get_open_orders(symbol),
-            "positions": [{"symbol": p.symbol, "qty": p.qty} for p in self.client.get_account_positions()],
+            "open_orders": open_orders,
+            "positions": positions,
+            "runtime_positions": positions,
+            "runtime_events": runtime_events,
             "symbol_rules": {
                 k: {
                     "tick_size": v.tick_size,

@@ -1,5 +1,3 @@
-"""Common exchange client interface for Binance/OKX live execution."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,12 +12,17 @@ class ExchangeOrder:
     qty: float
     order_type: str
     price: float | None = None
+    position_side: str | None = None
+    margin_mode: str | None = None
+    reduce_only: bool = False
 
 
 @dataclass(slots=True)
 class ExchangePosition:
     symbol: str
     qty: float
+    position_side: str | None = None
+    margin_mode: str | None = None
 
 
 @dataclass(slots=True)

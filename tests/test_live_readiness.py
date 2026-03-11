@@ -417,3 +417,45 @@ def test_runtime_risk_health_checks_cross_margin_account_state():
         max_risk_ratio=0.1,
     )
     assert not ok and reason == 'risk_ratio_exceeded'
+
+
+class _DummyOKXPerpExchange(DummyExchange):
+    def get_raw_open_orders(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return [
+            {
+                'instId': 'BTC-USDT-SWAP',
+                'clOrdId': 'cid-1',
+                'ordId': 'oid-1',
+                'state': 'live',
+                'side': 'buy',
+                'posSide': 'long',
+                'tdMode': 'cross',
+                'uTime': '1710201600000',
+            }
+        ]
+
+    def get_raw_account_positions(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return [
+            {
+                'instId': 'BTC-USDT-SWAP',
+                'posSide': 'long',
+                'pos': '0.25',
+                'avgPx': '100000',
+                'mgnMode': 'cross',
+                'uTime': '1710201602000',
+            }
+        ]
+
+
+def test_live_execution_service_reconcile_uses_okx_runtime_adapter():
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    ex = _DummyOKXPerpExchange()
+    svc = LiveExecutionService(ex, config=LiveExecutionConfig(dry_run=True), runtime_adapter=OKXPerpAdapter())
+
+    snap = svc.reconcile('BTC-USDT-SWAP')
+
+    assert snap['positions'][0]['symbol'] == 'BTC-USDT-SWAP'
+    assert snap['positions'][0]['position_side'] == 'long'
+    assert snap['open_orders'][0]['clientOrderId'] == 'cid-1'
+    assert snap['runtime_events'][0]['kind'] == 'order_event'
