@@ -423,6 +423,46 @@ Outcome:
 
 - second exchange on the same core without strategy-layer changes
 
+## Failure Handling and Recovery
+
+The unified engine must treat failures as first-class events.
+
+### Failure Cases
+
+- exchange reject
+- transport disconnect
+- stale market data
+- private stream gap
+- duplicate event delivery
+- late cancel acknowledgement
+- ledger replay mismatch
+
+### Recovery Rules
+
+- all externally visible ids must be idempotent
+- reconnect paths must resume from exchange truth, not local assumptions
+- local replay must reconstruct order and ledger state deterministically
+- live trading must degrade safely when account or order truth becomes uncertain
+- a recovery report must be produced before normal live trading resumes after restart
+
+## Testing Strategy
+
+Testing must prove semantic equivalence across runtime modes, not just unit correctness.
+
+### Test Layers
+
+- unit tests for state-machine transitions, ledger math, and risk rules
+- property tests for fill and ledger invariants
+- golden replay tests using captured OKX event streams
+- parity tests comparing `backtest`, `paper`, and `live-replay` outputs on the same event tape
+- performance smoke tests for high-volume event playback
+
+### Required Parity Checks
+
+- same `OrderIntent` produces the same state transition sequence in every mode
+- same fill sequence produces the same position and account ledger state in every mode
+- drift reports remain within configured thresholds for paper-vs-live replay comparisons
+
 ## Risks
 
 - microstructure modeling can become overfit if calibrated too tightly to short windows
@@ -450,3 +490,4 @@ This design is accepted when the implementation can demonstrate:
 - first-version funding-rate and liquidation approximation model
 - first-version queue-position model for simulated fills
 - backpressure strategy for very high event throughput
+
