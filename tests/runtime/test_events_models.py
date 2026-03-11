@@ -7,6 +7,7 @@ from quantx.runtime.events import (
     MarketEvent,
     OrderEvent,
 )
+from quantx.runtime.models import AccountLedger, OrderIntent, PositionLeg, TrackedOrder
 
 
 def test_event_kind_declares_all_runtime_event_families():
@@ -72,3 +73,58 @@ def test_event_order_fill_and_account_dataclasses_expose_runtime_fields():
     assert fill.position_side == 'long'
     assert fill.fee == 12.5
     assert account.event_type == 'funding'
+
+
+def test_model_order_intent_captures_derivatives_order_shape():
+    intent = OrderIntent(
+        symbol='BTC-USDT-SWAP',
+        side='buy',
+        position_side='long',
+        qty=2.0,
+        price=100500.0,
+        order_type='limit',
+        time_in_force='gtc',
+        reduce_only=False,
+    )
+
+    assert is_dataclass(intent)
+    assert intent.position_side == 'long'
+    assert intent.reduce_only is False
+    assert intent.order_type == 'limit'
+
+
+def test_model_position_leg_uses_symbol_and_position_side_key():
+    leg = PositionLeg(symbol='BTC-USDT-SWAP', position_side='short')
+
+    assert is_dataclass(leg)
+    assert leg.key == ('BTC-USDT-SWAP', 'short')
+    assert leg.qty == 0.0
+    assert leg.avg_entry_price == 0.0
+
+
+def test_model_account_ledger_tracks_cross_margin_fields():
+    ledger = AccountLedger(
+        wallet_balance=1000.0,
+        equity=1025.0,
+        available_margin=700.0,
+        used_margin=250.0,
+        maintenance_margin=40.0,
+        risk_ratio=0.039,
+    )
+    tracked = TrackedOrder(
+        client_order_id='cid-1',
+        symbol='BTC-USDT-SWAP',
+        side='buy',
+        position_side='long',
+        qty=2.0,
+        order_type='limit',
+        time_in_force='gtc',
+        reduce_only=False,
+    )
+
+    assert is_dataclass(ledger)
+    assert is_dataclass(tracked)
+    assert ledger.available_margin == 700.0
+    assert ledger.maintenance_margin == 40.0
+    assert tracked.position_side == 'long'
+    assert tracked.status == 'intent_created'
