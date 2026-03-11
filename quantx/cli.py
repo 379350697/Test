@@ -135,6 +135,7 @@ def build_parser():
     ex.add_argument("--symbol", default="BTCUSDT")
     ex.add_argument("--side", choices=["BUY", "SELL"], default="BUY")
     ex.add_argument("--qty", type=float, default=0.01)
+    ex.add_argument("--position-side", choices=["long", "short"])
     ex.add_argument("--order-type", choices=["market", "limit", "iceberg", "twap", "vwap"], default="market")
     ex.add_argument("--limit-price", type=float)
     ex.add_argument("--market-price", type=float, default=100.0)
@@ -299,6 +300,7 @@ def main(argv=None):
             visible_qty=args.visible_qty,
             schedule_slices=args.slices,
             broker_quotes=json.loads(args.broker_quotes),
+            position_side=args.position_side,
         )
         _print({"order": rec, "state": ex.state.__dict__}, args.json)
         return

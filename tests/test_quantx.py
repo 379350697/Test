@@ -410,3 +410,14 @@ def test_backtest_reports_runtime_trace_for_downstream_consumers():
     assert 'runtime' in res.extra
     assert res.extra['runtime']['mode'] == 'backtest'
     assert 'ledger' in res.extra['runtime']
+
+
+def test_paper_executor_exposes_runtime_state_for_cli_like_flows():
+    ex = PaperLiveExecutor('paper')
+    ex.arm()
+
+    ex.place_order('BTCUSDT', 'SELL', 0.25, order_type='market', market_price=100.0)
+
+    assert ex.state.positions['BTCUSDT'] == pytest.approx(-0.25)
+    assert ex.state.runtime['mode'] == 'paper'
+    assert ex.state.runtime['ledger']['equity'] > 0

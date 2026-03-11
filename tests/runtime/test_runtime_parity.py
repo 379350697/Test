@@ -52,3 +52,19 @@ def test_backtest_runtime_trace_records_order_flow_and_ledger_state():
     assert [order['status'] for order in runtime['orders']] == ['filled', 'filled']
     assert runtime['ledger']['equity'] == pytest.approx(res.equity_curve[-1][1])
     assert runtime['positions']['long']['qty'] == pytest.approx(0.0)
+
+
+from quantx.execution import PaperLiveExecutor
+
+
+def test_paper_runtime_executor_tracks_short_positions_with_runtime_trace():
+    ex = PaperLiveExecutor('paper')
+    ex.arm()
+
+    sell = ex.place_order('BTCUSDT', 'SELL', 0.5, order_type='market', market_price=100.0)
+
+    assert sell['accepted'] is True
+    assert sell['filled'] is True
+    assert ex.state.positions['BTCUSDT'] == pytest.approx(-0.5)
+    assert ex.state.runtime['orders'][-1]['status'] == 'filled'
+    assert ex.state.runtime['orders'][-1]['position_side'] == 'short'
