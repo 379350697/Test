@@ -386,3 +386,27 @@ def test_batch_summary_mode_omits_heavy_fields(tmp_path):
     ])
 
     assert "equity_curve" not in payload["results"][0]
+
+
+
+def test_backtest_reports_runtime_trace_for_downstream_consumers():
+    from datetime import datetime, timedelta
+
+    candles = [
+        Candle(
+            ts=datetime(2024, 1, 1) + timedelta(hours=i),
+            open=100.0 + i,
+            high=101.0 + i,
+            low=99.0 + i,
+            close=100.5 + i,
+            volume=10.0 + i,
+        )
+        for i in range(40)
+    ]
+    cfg = BacktestConfig(symbol='BTCUSDT', timeframe='1h')
+
+    res = run_backtest(candles, 'dca', {'buy_interval': 12, 'buy_amount_usdt': 20}, cfg)
+
+    assert 'runtime' in res.extra
+    assert res.extra['runtime']['mode'] == 'backtest'
+    assert 'ledger' in res.extra['runtime']
