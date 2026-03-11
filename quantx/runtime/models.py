@@ -27,6 +27,8 @@ class TrackedOrder:
     reduce_only: bool = False
     status: str = 'intent_created'
     exchange_order_id: str | None = None
+    price: float | None = None
+    filled_qty: float = 0.0
 
 
 @dataclass(slots=True)
