@@ -11,6 +11,7 @@ from typing import Any
 
 from .audit import JsonlAuditStore
 from .oms import JsonlOMSStore
+from .runtime.replay_store import RuntimeReplayStore
 
 
 @dataclass(slots=True)
@@ -68,31 +69,50 @@ def build_daily_replay_report(
 ) -> dict[str, Any]:
     target_day = date.fromisoformat(day) if day else datetime.utcnow().date()
 
-    all_events, invalid_event_lines = _iter_jsonl(event_log_path)
+    all_events, invalid_event_lines = RuntimeReplayStore(event_log_path).load()
     events = [r for r in all_events if _same_day(str(r.get("ts", "")), target_day)]
 
     event_counter: Counter[str] = Counter()
     level_counter: Counter[str] = Counter()
     reason_counter: Counter[str] = Counter()
     retries = 0
-    accepted = 0
-    rejected = 0
+    accepted_ids: set[str] = set()
+    rejected_ids: set[str] = set()
+    accepted_legacy = 0
+    rejected_legacy = 0
 
     for ev in events:
+        payload_raw = ev.get("payload")
+        payload: dict[str, Any] = payload_raw if isinstance(payload_raw, dict) else {}
+        kind = str(ev.get("kind", ""))
+        if kind in {"market_event", "order_event", "fill_event", "account_event"}:
+            event_counter[kind] += 1
+            level_counter[str(payload.get("level", "INFO"))] += 1
+            if kind == "order_event":
+                status = str(ev.get("status", "unknown"))
+                client_order_id = str(ev.get("client_order_id", "unknown"))
+                if status in {"acked", "working", "partially_filled", "filled"}:
+                    accepted_ids.add(client_order_id)
+                if status == "rejected":
+                    rejected_ids.add(client_order_id)
+                    reason = str(payload.get("reason", "unknown"))
+                    reason_counter[reason] += 1
+            continue
+
         event_name = str(ev.get("event", "unknown"))
         event_counter[event_name] += 1
         level_counter[str(ev.get("level", "INFO"))] += 1
-
-        payload_raw = ev.get("payload")
-        payload: dict[str, Any] = payload_raw if isinstance(payload_raw, dict) else {}
         if event_name == "place_order_retry":
             retries += 1
         if event_name == "order_accepted":
-            accepted += 1
+            accepted_legacy += 1
         if event_name == "order_rejected":
-            rejected += 1
+            rejected_legacy += 1
             reason = str(payload.get("reason", "unknown"))
             reason_counter[reason] += 1
+
+    accepted = accepted_legacy + len(accepted_ids)
+    rejected = rejected_legacy + len(rejected_ids)
 
     oms_event_counts: dict[str, int] = {}
     if oms_store_path:

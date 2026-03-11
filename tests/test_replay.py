@@ -86,3 +86,20 @@ def test_build_daily_replay_report_skips_invalid_lines_and_filters_audit_day(tmp
     assert rep["invalid_event_lines"] == 2
     assert rep["audit_events"] == 1
     assert rep["audit_ok"] is False
+
+
+def test_build_daily_replay_report_from_runtime_event_store_fixture():
+    fixture = Path(__file__).with_name('fixtures') / 'runtime_replay_events.jsonl'
+
+    rep = build_daily_replay_report(
+        event_log_path=str(fixture),
+        day='2026-03-12',
+    )
+
+    assert rep['event_counts']['order_event'] == 2
+    assert rep['event_counts']['fill_event'] == 1
+    assert rep['event_counts']['account_event'] == 1
+    assert rep['accepted'] == 1
+    assert rep['rejected'] == 1
+    assert rep['reject_reason_top'][0][0] == 'lot_too_small'
+    assert rep['invalid_event_lines'] == 0
