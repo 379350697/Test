@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from quantx.runtime.events import FillEvent, OrderEvent
+from quantx.runtime.events import AccountEvent, FillEvent, OrderEvent
 from quantx.runtime.models import OrderIntent
 from quantx.runtime.session import RuntimeSession
 
@@ -102,3 +102,77 @@ def test_runtime_session_snapshot_tracks_nested_positions_and_ledger_fields():
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 1.0
     assert snapshot['orders'][0]['filled_qty'] == 1.0
     assert snapshot['orders'][0]['status'] == 'filled'
+
+
+def test_runtime_session_books_funding_without_rewriting_truth_from_position_snapshot():
+    session = RuntimeSession(mode='live', wallet_balance=1000.0)
+    session.submit_intents(
+        [
+            OrderIntent(
+                symbol='BTC-USDT-SWAP',
+                side='buy',
+                position_side='long',
+                qty=1.0,
+                price=100.0,
+                order_type='market',
+                time_in_force='ioc',
+                reduce_only=False,
+                intent_id='cid-1',
+            )
+        ],
+        exchange='okx',
+        ts='2026-03-12T00:00:00+00:00',
+    )
+    session.apply_events(
+        [
+            OrderEvent(
+                symbol='BTC-USDT-SWAP',
+                exchange='okx',
+                ts='2026-03-12T00:00:00+00:00',
+                client_order_id='cid-1',
+                exchange_order_id='oid-1',
+                status='acked',
+                payload={},
+            ),
+            FillEvent(
+                symbol='BTC-USDT-SWAP',
+                exchange='okx',
+                ts='2026-03-12T00:00:01+00:00',
+                client_order_id='cid-1',
+                exchange_order_id='oid-1',
+                trade_id='tid-1',
+                side='buy',
+                position_side='long',
+                qty=1.0,
+                price=100.0,
+                fee=0.1,
+                payload={},
+            ),
+            AccountEvent(
+                exchange='okx',
+                ts='2026-03-12T08:00:00+00:00',
+                event_type='funding',
+                payload={'symbol': 'BTC-USDT-SWAP', 'position_side': 'long', 'amount': -0.2},
+            ),
+            AccountEvent(
+                exchange='okx',
+                ts='2026-03-12T08:00:01+00:00',
+                event_type='position_snapshot',
+                payload={
+                    'symbol': 'BTC-USDT-SWAP',
+                    'position_side': 'long',
+                    'qty': 2.0,
+                    'avg_entry_price': 101.0,
+                },
+            ),
+        ]
+    )
+
+    snapshot = session.snapshot()
+
+    assert snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 1.0
+    assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
+    assert snapshot['observed_exchange']['positions']['BTC-USDT-SWAP']['long']['qty'] == 2.0
+
+
+

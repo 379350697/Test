@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 from .events import AccountEvent, FillEvent, MarketEvent, OrderEvent
 from .ledger_engine import LedgerEngine
@@ -19,6 +19,8 @@ class RuntimeSession:
     ledger_engine: LedgerEngine = field(init=False)
     _order_ids: list[str] = field(default_factory=list)
     _order_state_sequences: dict[str, list[str]] = field(default_factory=dict)
+    _observed_exchange_positions: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
+    _observed_exchange_account: dict[str, float] = field(default_factory=dict)
     _sequence: int = 0
 
     def __post_init__(self) -> None:
@@ -73,8 +75,13 @@ class RuntimeSession:
                 self._record_state(order.client_order_id, order.status)
             elif isinstance(event, MarketEvent):
                 self.ledger_engine.apply_market_event(event)
-            elif isinstance(event, AccountEvent) and event.event_type == 'funding':
-                self.ledger_engine.apply_account_event(event)
+            elif isinstance(event, AccountEvent):
+                if event.event_type == 'funding':
+                    self.ledger_engine.apply_account_event(event)
+                elif event.event_type == 'position_snapshot':
+                    self._store_position_snapshot(event)
+                elif event.event_type == 'account_snapshot':
+                    self._store_account_snapshot(event)
             applied.append(event)
         return applied
 
@@ -116,6 +123,13 @@ class RuntimeSession:
                 'risk_ratio': self.ledger_engine.ledger.risk_ratio,
             },
             'positions': positions,
+            'observed_exchange': {
+                'positions': {
+                    symbol: {position_side: dict(values) for position_side, values in legs.items()}
+                    for symbol, legs in self._observed_exchange_positions.items()
+                },
+                'account': dict(self._observed_exchange_account),
+            },
         }
 
     def _next_client_order_id(self, intent: OrderIntent) -> str:
@@ -128,6 +142,32 @@ class RuntimeSession:
         sequence = self._order_state_sequences.setdefault(client_order_id, [])
         if not sequence or sequence[-1] != status:
             sequence.append(status)
+
+    def _store_position_snapshot(self, event: AccountEvent) -> None:
+        symbol = str(event.payload['symbol'])
+        position_side = str(event.payload['position_side'])
+        values = self._coerce_numeric_fields(event.payload, exclude={'symbol', 'position_side'})
+        self._observed_exchange_positions.setdefault(symbol, {})[position_side] = values
+
+    def _store_account_snapshot(self, event: AccountEvent) -> None:
+        self._observed_exchange_account = self._coerce_numeric_fields(event.payload)
+
+    def _coerce_numeric_fields(
+        self,
+        payload: dict[str, Any],
+        *,
+        exclude: set[str] | None = None,
+    ) -> dict[str, float]:
+        values: dict[str, float] = {}
+        excluded = exclude or set()
+        for key, raw in payload.items():
+            if key in excluded:
+                continue
+            try:
+                values[key] = float(raw)
+            except (TypeError, ValueError):
+                continue
+        return values
 
     def _make_order_event(
         self,

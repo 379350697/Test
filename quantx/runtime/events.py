@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 
 class EventKind(str, Enum):
@@ -51,10 +51,13 @@ class FillEvent:
     kind: EventKind = field(init=False, default=EventKind.FILL)
 
 
+AccountEventType: TypeAlias = Literal['funding', 'position_snapshot', 'account_snapshot']
+
+
 @dataclass(slots=True)
 class AccountEvent:
     exchange: str
     ts: str
-    event_type: str
+    event_type: AccountEventType
     payload: dict[str, Any]
     kind: EventKind = field(init=False, default=EventKind.ACCOUNT)
