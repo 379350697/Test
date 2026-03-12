@@ -161,3 +161,21 @@ def test_bootstrap_and_runtime_health_fail_closed_after_cold_recovery(tmp_path):
 
     assert report['resume_mode'] == 'blocked'
     assert report['runtime_status']['execution_mode'] == 'blocked'
+
+from quantx.live_runtime_store import LiveRuntimeStore
+
+
+def test_bootstrap_restart_ignores_runtime_store_when_recovery_is_cold(tmp_path):
+    status_store = LiveRuntimeStore(tmp_path / 'autotrade' / 'status.json')
+    status_store.write_status({'supervisor': {'state': 'reduce_only'}, 'healthy_cycle_count': 2})
+
+    report = bootstrap_recover_and_reconcile(
+        service=_StubService({'open_orders': [], 'positions': [], 'symbol_rules': {}}),
+        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'missing.jsonl'),
+        initial_cash=1000.0,
+        symbol='BTC-USDT-SWAP',
+    )
+
+    assert report['recovery_mode'] == 'cold'
+    assert report['resume_mode'] == 'blocked'

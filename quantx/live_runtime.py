@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .live_margin_allocator import MarginAllocator
+from .live_runtime_store import LiveRuntimeStore
 from .live_strategy_runner import LiveStrategyRunner
 from .live_supervisor import LiveSupervisor
 from .runtime.models import OrderIntent
@@ -27,6 +28,7 @@ class LiveRuntime:
         market_driver: Any,
         private_stream_transport: Any,
         service: Any,
+        store: LiveRuntimeStore | None = None,
         supervisor: LiveSupervisor | None = None,
         strategy_runner: LiveStrategyRunner | None = None,
         allocator: MarginAllocator | None = None,
@@ -35,6 +37,7 @@ class LiveRuntime:
         self.market_driver = market_driver
         self.private_stream_transport = private_stream_transport
         self.service = service
+        self.store = store
         self.supervisor = supervisor or LiveSupervisor(required_healthy_cycles=config.healthy_recovery_cycles)
         self.strategy_runner = strategy_runner or LiveStrategyRunner(
             strategy_name=config.strategy_name,
@@ -46,6 +49,7 @@ class LiveRuntime:
             max_symbol_weight=config.max_symbol_weight,
         )
         self._bootstrapped = False
+        self._restore_persisted_state()
 
     def bootstrap_once(self) -> dict[str, Any]:
         self._apply_symbol_budgets()
@@ -55,6 +59,7 @@ class LiveRuntime:
         self.supervisor.mark_live_active()
         self._sync_execution_mode()
         self._bootstrapped = True
+        self._persist_status()
         return self.status()
 
     def run_market_iteration(self) -> dict[str, Any]:
@@ -62,13 +67,15 @@ class LiveRuntime:
         intents = self.strategy_runner.on_bar_batch(bars_by_symbol) if bars_by_symbol else []
         orders = [self._intent_to_order(intent) for intent in intents]
         execution = self.service.execute_orders(orders) if orders and hasattr(self.service, 'execute_orders') else {'ok': True, 'accepted': [], 'rejected': []}
-        return {
+        result = {
             'bars_by_symbol': bars_by_symbol,
             'intents': intents,
             'orders': orders,
             'execution': execution,
             'supervisor': self.status()['supervisor'],
         }
+        self._persist_status()
+        return result
 
     def run_health_iteration(
         self,
@@ -85,6 +92,7 @@ class LiveRuntime:
                 self.service.run_private_stream_once()
             self.supervisor.record_health_cycle(healthy=healthy, cycle_boundary=cycle_boundary)
         self._sync_execution_mode()
+        self._persist_status()
         return self.status()
 
     def run_forever(self, *, stop_event: Any | None = None) -> None:
@@ -105,6 +113,7 @@ class LiveRuntime:
             },
             'healthy_cycle_count': self.supervisor.consecutive_healthy_cycles,
             'watchlist': list(self.config.watchlist),
+            'last_closed_bar_ts': self._last_closed_bar_ts(),
         }
 
     def _apply_symbol_budgets(self) -> None:
@@ -116,6 +125,29 @@ class LiveRuntime:
     def _sync_execution_mode(self) -> None:
         if hasattr(self.service, 'set_execution_mode'):
             self.service.set_execution_mode(self.supervisor.execution_mode())
+
+    def _persist_status(self) -> None:
+        if self.store is None:
+            return
+        self.store.write_status(self.status())
+
+    def _restore_persisted_state(self) -> None:
+        if self.store is None:
+            return
+        payload = self.store.read_status()
+        if not payload:
+            return
+        self.supervisor.consecutive_healthy_cycles = int(payload.get('healthy_cycle_count', 0) or 0)
+        if hasattr(self.market_driver, '_last_closed_bar_ts'):
+            restored = payload.get('last_closed_bar_ts', {})
+            if isinstance(restored, dict):
+                self.market_driver._last_closed_bar_ts = {str(symbol): str(ts) for symbol, ts in restored.items()}
+
+    def _last_closed_bar_ts(self) -> dict[str, str]:
+        raw = getattr(self.market_driver, '_last_closed_bar_ts', {})
+        if not isinstance(raw, dict):
+            return {}
+        return {str(symbol): str(ts) for symbol, ts in raw.items()}
 
     def _intent_to_order(self, intent: OrderIntent) -> dict[str, Any]:
         return {
