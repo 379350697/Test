@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -475,7 +475,7 @@ def main(argv=None):
             with open(args.out, "w", encoding="utf-8") as f:
                 f.write(json.dumps(payload, ensure_ascii=False, indent=2))
         _print(payload, True if args.json else False)
-        return
+        return payload
 
 
     if args.cmd == "credentials-check":
@@ -514,11 +514,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-

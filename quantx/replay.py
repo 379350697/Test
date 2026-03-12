@@ -1,13 +1,14 @@
-﻿"""Daily replay summary generator for personal live trading operations."""
+"""Daily replay summary generator for personal live trading operations."""
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from .audit import JsonlAuditStore
+from .monitoring import summarize_replay_incidents
 from .oms import JsonlOMSStore
 from .runtime.events import AccountEvent, FillEvent, MarketEvent
 from .runtime.models import OrderIntent
@@ -29,6 +30,10 @@ class DailyReplayReport:
     audit_ok: bool
     audit_events: int
     invalid_event_lines: int
+    incident_summary: dict[str, Any]
+    degrade_windows: list[dict[str, Any]]
+    gate_recommendation: str
+    operator_actions: list[str]
     runtime_summary: dict[str, Any]
     paper_summary: dict[str, Any]
     drift_metrics: dict[str, Any]
@@ -290,7 +295,7 @@ def build_daily_replay_report(
     audit_store_path: str | None = None,
     day: str | None = None,
 ) -> dict[str, Any]:
-    target_day = date.fromisoformat(day) if day else datetime.utcnow().date()
+    target_day = date.fromisoformat(day) if day else datetime.now(timezone.utc).date()
 
     all_events, invalid_event_lines = RuntimeReplayStore(event_log_path).load()
     events = [r for r in all_events if _same_day(str(r.get('ts', '')), target_day)]
@@ -356,6 +361,13 @@ def build_daily_replay_report(
     runtime_summary = _summarize_runtime_events(events)
     paper_summary = _rerun_paper_summary(events, runtime_summary)
     drift_metrics = _build_drift_metrics(runtime_summary, paper_summary)
+    incident_review = summarize_replay_incidents(
+        events,
+        retries=retries,
+        rejected=rejected,
+        invalid_event_lines=invalid_event_lines,
+        runtime_summary=runtime_summary,
+    )
 
     report = DailyReplayReport(
         day=target_day.isoformat(),
@@ -369,6 +381,10 @@ def build_daily_replay_report(
         audit_ok=audit_ok,
         audit_events=audit_events,
         invalid_event_lines=invalid_event_lines,
+        incident_summary=incident_review['incident_summary'],
+        degrade_windows=incident_review['degrade_windows'],
+        gate_recommendation=str(incident_review['gate_recommendation']),
+        operator_actions=list(incident_review['operator_actions']),
         runtime_summary=runtime_summary,
         paper_summary=paper_summary,
         drift_metrics=drift_metrics,

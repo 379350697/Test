@@ -467,6 +467,19 @@ def test_backtest_runtime_payload_includes_parity_order_state_sequences():
     assert sequences[0][-1] == 'filled'
 
 
+def test_replay_daily_surfaces_incident_summary_and_gate_recommendation(tmp_path):
+    from quantx.cli import main
+
+    payload = main([
+        'replay-daily',
+        '--events', str(tmp_path / 'events.jsonl'),
+        '--json',
+    ])
+
+    assert 'incident_summary' in payload
+    assert 'gate_recommendation' in payload
+
+
 def test_deploy_and_execute_order_cli_route_through_runtime_core():
     from quantx.cli import main
 

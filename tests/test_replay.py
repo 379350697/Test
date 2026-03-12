@@ -118,6 +118,20 @@ def test_build_daily_replay_report_includes_runtime_parity_drift_metrics():
     assert rep['drift_metrics']['paper_vs_live']['equity_drift'] == 0.0
 
 
+def test_replay_daily_surfaces_incident_summary_and_gate_recommendation(tmp_path: Path):
+    logs = tmp_path / 'runtime' / 'events.jsonl'
+    logger = JsonlEventLogger(str(logs))
+    logger.log(LogEvent(category='system', event='place_order_retry', level='WARN', stage='execute', payload={'attempt': 1}))
+    logger.log(LogEvent(category='trade', event='order_rejected', level='ERROR', stage='execute', payload={'reason': 'symbol_not_allowed'}))
+
+    rep = build_daily_replay_report(
+        event_log_path=str(logs),
+    )
+
+    assert 'incident_summary' in rep
+    assert 'gate_recommendation' in rep
+
+
 def test_build_daily_replay_report_surfaces_runtime_health_and_order_sequence_invariants():
     fixture = Path(__file__).with_name('fixtures') / 'runtime_market_tape.jsonl'
 
