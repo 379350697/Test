@@ -7,11 +7,13 @@ from typing import Any
 
 from .live_service import LiveExecutionService
 from .oms import JsonlOMSStore, OrderManager
+from .runtime.replay_store import RuntimeReplayStore
 
 
 @dataclass(slots=True)
 class BootstrapTakeoverReport:
     ok: bool
+    recovery_mode: str
     recovered_orders: int
     recovered_working_orders: int
     local_positions: dict[str, float]
@@ -73,6 +75,16 @@ def _normalize_runtime_position_rows(rows: list[dict[str, Any]], qty_tolerance: 
     return _normalize_positions(normalized, qty_tolerance)
 
 
+def _warm_runtime_snapshot(runtime_event_log_path: str | None, initial_cash: float) -> dict[str, Any] | None:
+    if not runtime_event_log_path:
+        return None
+    replay_store = RuntimeReplayStore(runtime_event_log_path)
+    rows, _ = replay_store.load()
+    if not rows:
+        return None
+    return replay_store.rebuild_session(wallet_balance=initial_cash, mode='live').snapshot()
+
+
 def bootstrap_recover_and_reconcile(
     *,
     service: LiveExecutionService,
@@ -80,6 +92,7 @@ def bootstrap_recover_and_reconcile(
     initial_cash: float = 0.0,
     symbol: str | None = None,
     qty_tolerance: float = 1e-9,
+    runtime_event_log_path: str | None = None,
 ) -> dict[str, Any]:
     """Recover OMS state and reconcile against exchange snapshot.
 
@@ -90,17 +103,24 @@ def bootstrap_recover_and_reconcile(
 
     om = OrderManager.recover(store=oms_store, initial_cash=initial_cash)
     local_positions = _normalize_positions(om.ledger.positions, qty_tolerance)
-
     local_working = sorted(om.list_working_order_ids())
 
+    warm_snapshot = _warm_runtime_snapshot(runtime_event_log_path, initial_cash)
+    recovery_mode = 'warm' if warm_snapshot is not None else 'cold'
+
     snapshot = service.reconcile(symbol)
-    runtime_snapshot_positions = snapshot.get("runtime_snapshot", {}).get("positions", {})
-    if isinstance(runtime_snapshot_positions, dict) and runtime_snapshot_positions:
-        runtime_positions = runtime_snapshot_positions
-        exchange_positions = _normalize_runtime_snapshot_positions(runtime_snapshot_positions, qty_tolerance)
+    service_runtime_snapshot_positions = snapshot.get('runtime_snapshot', {}).get('positions', {})
+    if isinstance(service_runtime_snapshot_positions, dict) and service_runtime_snapshot_positions:
+        exchange_positions = _normalize_runtime_snapshot_positions(service_runtime_snapshot_positions, qty_tolerance)
     else:
-        runtime_positions = {"rows": snapshot.get("runtime_positions") or snapshot.get("positions", [])}
-        exchange_positions = _normalize_runtime_position_rows(runtime_positions['rows'], qty_tolerance)
+        exchange_positions = _normalize_runtime_position_rows(snapshot.get('runtime_positions') or snapshot.get('positions', []), qty_tolerance)
+
+    if warm_snapshot is not None:
+        runtime_positions = warm_snapshot.get('positions', {})
+    elif isinstance(service_runtime_snapshot_positions, dict) and service_runtime_snapshot_positions:
+        runtime_positions = service_runtime_snapshot_positions
+    else:
+        runtime_positions = {'rows': snapshot.get('runtime_positions') or snapshot.get('positions', [])}
 
     position_diffs: dict[str, float] = {}
     for sym in sorted(set(local_positions) | set(exchange_positions)):
@@ -110,7 +130,7 @@ def bootstrap_recover_and_reconcile(
 
     exchange_open_order_ids = sorted({
         oid
-        for oid in (_extract_order_id(od) for od in snapshot.get("open_orders", []))
+        for oid in (_extract_order_id(od) for od in snapshot.get('open_orders', []))
         if oid
     })
 
@@ -120,15 +140,18 @@ def bootstrap_recover_and_reconcile(
     unmanaged_on_exchange = sorted(exchange_set - local_set)
 
     notes: list[str] = []
+    if runtime_event_log_path and warm_snapshot is None:
+        notes.append('cold_recovery_degraded')
     if position_diffs:
-        notes.append("position_mismatch_detected")
+        notes.append('position_mismatch_detected')
     if missing_on_exchange:
-        notes.append("local_working_orders_missing_on_exchange")
+        notes.append('local_working_orders_missing_on_exchange')
     if unmanaged_on_exchange:
-        notes.append("exchange_open_orders_not_tracked_locally")
+        notes.append('exchange_open_orders_not_tracked_locally')
 
     report = BootstrapTakeoverReport(
         ok=(len(notes) == 0),
+        recovery_mode=recovery_mode,
         recovered_orders=len(om.list_orders()),
         recovered_working_orders=len(local_working),
         local_positions=local_positions,

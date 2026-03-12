@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from quantx.bootstrap import bootstrap_recover_and_reconcile
 from quantx.oms import JsonlOMSStore, OMSOrder, OrderManager
+from quantx.runtime import AccountEvent, FillEvent, OrderEvent, RuntimeReplayStore
 
 
 class _StubService:
@@ -83,3 +84,53 @@ def test_bootstrap_recover_and_reconcile_prefers_runtime_positions_over_raw_asse
     assert rep['ok'] is True
     assert rep['exchange_positions']['BTC-USDT-SWAP'] == 0.1
     assert rep['position_diffs'] == {}
+
+def test_bootstrap_recover_and_reconcile_uses_runtime_replay_for_warm_recovery(tmp_path):
+    replay = RuntimeReplayStore(str(tmp_path / 'runtime' / 'events.jsonl'))
+    replay.append(
+        OrderEvent(
+            symbol='BTC-USDT-SWAP',
+            exchange='okx',
+            ts='2026-03-12T00:00:00+00:00',
+            client_order_id='cid-1',
+            exchange_order_id='oid-1',
+            status='acked',
+            payload={},
+        )
+    )
+    replay.append(
+        FillEvent(
+            symbol='BTC-USDT-SWAP',
+            exchange='okx',
+            ts='2026-03-12T00:00:01+00:00',
+            client_order_id='cid-1',
+            exchange_order_id='oid-1',
+            trade_id='tid-1',
+            side='buy',
+            position_side='long',
+            qty=0.25,
+            price=100000.0,
+            fee=0.0,
+            payload={},
+        )
+    )
+    replay.append(
+        AccountEvent(
+            exchange='okx',
+            ts='2026-03-12T08:00:00+00:00',
+            event_type='funding',
+            payload={'symbol': 'BTC-USDT-SWAP', 'position_side': 'long', 'amount': -0.2},
+        )
+    )
+
+    report = bootstrap_recover_and_reconcile(
+        service=_StubService({'open_orders': [], 'positions': [], 'symbol_rules': {}}),
+        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        runtime_event_log_path=str(replay.path),
+        initial_cash=1000.0,
+        symbol='BTC-USDT-SWAP',
+    )
+
+    assert report['recovery_mode'] == 'warm'
+    assert report['runtime_positions']['BTC-USDT-SWAP']['long']['qty'] == 0.25
+    assert report['runtime_positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
