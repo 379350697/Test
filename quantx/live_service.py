@@ -1,4 +1,4 @@
-"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
+﻿"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
 
 from __future__ import annotations
 
@@ -294,6 +294,9 @@ class LiveExecutionService:
     def runtime_snapshot(self) -> dict[str, Any]:
         return self.runtime_coordinator.snapshot()
 
+    def runtime_status(self) -> dict[str, Any]:
+        return self.runtime_coordinator.status()
+
     def _runtime_intent(self, order: ExchangeOrder, *, ts: str) -> OrderIntent:
         return OrderIntent(
             symbol=order.symbol,
@@ -314,7 +317,8 @@ class LiveExecutionService:
     def _apply_runtime_event(self, event: Any) -> None:
         try:
             self.runtime_coordinator.apply_event(event)
-        except Exception:
+        except Exception as exc:
+            self._log('system', 'runtime_event_apply_failed', level='ERROR', stage='apply_event', payload={'error': str(exc)})
             return
 
     def _place_with_retry(self, order: ExchangeOrder) -> dict[str, Any]:
@@ -336,6 +340,7 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
+
 
 
 

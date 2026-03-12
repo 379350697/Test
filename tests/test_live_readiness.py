@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import urllib.error
@@ -13,6 +13,7 @@ from quantx.oms import JsonlOMSStore, OMSOrder, OrderManager
 from quantx.readiness import ReadinessContext, ReadinessError, assert_ready, blockers, evaluate_readiness
 from quantx.risk_engine import CircuitBreakerLimits, RiskCircuitBreaker, RiskLimits, check_account_notional
 from quantx.system_log import JsonlEventLogger, LogEvent, MemoryEventLogger
+from quantx.runtime import AccountEvent
 
 
 class DummyExchange:
@@ -94,6 +95,29 @@ def test_live_execution_service_pretrade_and_rule_rejects():
     rej = svc.execute_orders(bad_orders)
     assert not rej["ok"]
     assert rej["rejected"][0]["reason"] in {"below_min_qty", "below_min_notional"}
+
+
+def test_live_service_marks_runtime_degraded_when_runtime_event_application_fails(tmp_path):
+    svc = LiveExecutionService(
+        DummyExchange(),
+        config=LiveExecutionConfig(dry_run=True, exchange='okx', runtime_mode='derivatives'),
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'events.jsonl'),
+    )
+
+    svc.ingest_runtime_event(
+        AccountEvent(
+            exchange='okx',
+            ts='2026-03-12T00:00:00+00:00',
+            event_type='funding',
+            payload={},
+        )
+    )
+
+    status = svc.runtime_status()
+
+    assert status['degraded'] is True
+    assert status['last_error']['stage'] == 'apply_event'
+    assert status['execution_mode'] == 'blocked'
 
 
 def test_risk_circuit_breaker_and_account_notional_limits():
@@ -626,5 +650,6 @@ def test_live_execution_service_ingests_private_stream_events_into_runtime_truth
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 0.01
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
     assert snapshot['observed_exchange']
+
 
 

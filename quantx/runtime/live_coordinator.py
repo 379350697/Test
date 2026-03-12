@@ -1,9 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable
+from dataclasses import dataclass, field
+from typing import Any, Iterable
 
 from .events import OrderEvent
+from .health import RuntimeHealthState
 from .models import OrderIntent
 from .replay_store import RuntimeReplayStore
 from .session import RuntimeSession
@@ -13,7 +14,7 @@ from .session import RuntimeSession
 class LiveRuntimeCoordinator:
     session: RuntimeSession
     replay_store: RuntimeReplayStore | None = None
-    degraded: bool = False
+    health: RuntimeHealthState = field(default_factory=RuntimeHealthState)
 
     def submit_intents(self, intents: Iterable[OrderIntent], *, exchange: str, ts: str) -> list[OrderEvent]:
         intent_list = list(intents)
@@ -34,19 +35,21 @@ class LiveRuntimeCoordinator:
         return emitted
 
     def apply_event(self, event: object) -> object:
-        if self.replay_store is not None:
-            self.replay_store.append(event)
-        self.session.apply_events([event])
+        try:
+            if self.replay_store is not None:
+                self.replay_store.append(event)
+            self.session.apply_events([event])
+        except Exception as exc:
+            self.health.mark_apply_error(exc, stage='apply_event')
+            raise
         return event
 
     def snapshot(self) -> dict[str, object]:
         return self.session.snapshot()
 
-    def status(self) -> dict[str, bool]:
-        return {
-            'replay_persistence': bool(self.replay_store is not None and self.replay_store.path.exists()),
-            'degraded': self.degraded,
-        }
+    def status(self, *, now_ts: str | None = None, stale_after_s: int = 30) -> dict[str, Any]:
+        self.health.mark_replay_persistence(bool(self.replay_store is not None and self.replay_store.path.exists()))
+        return self.health.snapshot(now_ts=now_ts, stale_after_s=stale_after_s)
 
     def _intent_created_event(
         self,
@@ -79,4 +82,3 @@ class LiveRuntimeCoordinator:
                 'tags': list(intent.tags),
             },
         )
-
