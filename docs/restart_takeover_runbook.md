@@ -14,6 +14,7 @@ Recover local OMS state, reconcile against exchange truth, and fail closed unles
    - `promotion_policy`
 4. Keep live capital disabled until readiness checks are green.
 5. Use `autotrade-status` to inspect the persisted unattended supervisor state before restarting `autotrade-start`, and keep the latest `process.pid` from the last start response for operator correlation.
+6. Run `autotrade-healthcheck` before the next restart decision so the stored runtime truth and process liveness are judged from the outside.
 
 ## Bootstrap Policy Mapping
 Use bootstrap output to feed the live promotion contract:
@@ -27,6 +28,24 @@ Use bootstrap output to feed the live promotion contract:
 - `resume_mode=read_only`: reconcile positions/orders first; do not add new risk. Keep `autotrade-start` disabled until the state clears.
 - `resume_mode=reduce_only`: close or reduce risk only until the rest of the contract is green. `autotrade-status` reads the persisted runtime store and should show `supervisor.state=reduce_only`.
 - `resume_mode=live`: bootstrap takeover allows progression to the full readiness review and then `autotrade-start`.
+
+## Watchdog Interpretation Next Morning
+Use `autotrade-healthcheck` as the first unattended-runtime read in the morning.
+
+- `process_dead`: the stored `process.pid` is no longer alive. Do not restart blindly. Read the last persisted `autotrade-status`, inspect OMS/runtime events, rerun takeover, and only then decide whether to relaunch.
+- `status_stale`: the status file stopped updating past the configured staleness window. Treat this the same as fail-closed runtime uncertainty. Reconcile before any new risk.
+- `blocked`: confirm whether the stop came from bootstrap mismatch, repeated execution failures, or `pilot_risk` such as `daily_loss_exceeded`.
+- `reduce_only`: you may reduce or flatten exposure, but do not resume unrestricted trading until takeover and readiness are green again.
+
+## First-Week Pilot Envelope
+If you do restart after a clean morning review, keep the first-week pilot bounded to:
+
+- `BTC-USDT-SWAP`, `ETH-USDT-SWAP`, `XRP-USDT-SWAP`
+- `total_margin=1000`
+- `max_symbol_weight=0.30`
+- `max_notional_per_cycle=400`
+
+Document any change to these values explicitly; do not treat them as hidden defaults.
 
 ## Final Gate Before Orders
 After takeover, run readiness and confirm these checks are green before live rollout:
@@ -45,6 +64,7 @@ Suggested operator sequence:
 
 ```bash
 quantx deploy --mode live --exchange okx --symbol BTC-USDT-SWAP --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
-quantx autotrade-status --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
-quantx autotrade-start --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
+quantx autotrade-status --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP","XRP-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
+quantx autotrade-healthcheck --status-path runtime/autotrade/status.json --stale-after-seconds 60 --alert-webhook https://example.com/hook --json
+quantx autotrade-start --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP","XRP-USDT-SWAP"]' --total-margin 1000 --max-symbol-weight 0.30 --max-notional-per-cycle 400 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
 ```
