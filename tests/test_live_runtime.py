@@ -66,3 +66,25 @@ def test_live_runtime_store_round_trips_status_and_recovery_state(tmp_path):
     payload = store.read_status()
     assert payload['supervisor']['state'] == 'reduce_only'
     assert payload['healthy_cycle_count'] == 2
+
+
+def test_live_runtime_persists_heartbeat_fields_and_degrade_reason(tmp_path):
+    store = LiveRuntimeStore(tmp_path / 'status.json')
+    runtime = LiveRuntime(
+        config=LiveRuntimeConfig(watchlist=('BTC-USDT-SWAP',), strategy_name='cta_strategy', total_margin=1000.0),
+        market_driver=_MarketDriverStub(),
+        private_stream_transport=_PrivateStreamStub(),
+        service=_LiveServiceStub(),
+        store=store,
+    )
+
+    runtime.bootstrap_once()
+    runtime.run_market_iteration()
+    runtime.run_health_iteration(force_gap=True)
+
+    payload = store.read_status()
+    assert payload['process']['started_at']
+    assert payload['runtime']['updated_at']
+    assert payload['runtime']['last_market_iteration_at']
+    assert payload['runtime']['last_health_iteration_at']
+    assert payload['supervisor']['last_degrade_reason'] == 'stream_gap'

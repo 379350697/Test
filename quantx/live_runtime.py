@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import time
 from typing import Any
 
@@ -50,9 +51,14 @@ class LiveRuntime:
             max_symbol_weight=config.max_symbol_weight,
         )
         self._bootstrapped = False
+        self._started_at: str | None = None
+        self._updated_at: str | None = None
+        self._last_market_iteration_at: str | None = None
+        self._last_health_iteration_at: str | None = None
         self._restore_persisted_state()
 
     def bootstrap_once(self) -> dict[str, Any]:
+        self._started_at = self._utc_now()
         self._apply_symbol_budgets()
         if hasattr(self.private_stream_transport, 'connect'):
             self.private_stream_transport.connect()
@@ -64,6 +70,7 @@ class LiveRuntime:
         return self.status()
 
     def run_market_iteration(self) -> dict[str, Any]:
+        self._last_market_iteration_at = self._utc_now()
         bars_by_symbol = self.market_driver.poll_once()
         intents = self.strategy_runner.on_bar_batch(bars_by_symbol) if bars_by_symbol else []
         orders = [self._intent_to_order(intent) for intent in intents]
@@ -85,6 +92,7 @@ class LiveRuntime:
         force_healthy: bool = False,
         cycle_boundary: bool = False,
     ) -> dict[str, Any]:
+        self._last_health_iteration_at = self._utc_now()
         if force_gap:
             self.supervisor.on_stream_gap_detected(reason='stream_gap')
         else:
@@ -106,6 +114,15 @@ class LiveRuntime:
 
     def status(self) -> dict[str, Any]:
         return {
+            'process': {
+                'started_at': self._started_at,
+            },
+            'runtime': {
+                'updated_at': self._updated_at,
+                'last_market_iteration_at': self._last_market_iteration_at,
+                'last_health_iteration_at': self._last_health_iteration_at,
+                'execution_mode': self.supervisor.execution_mode(),
+            },
             'supervisor': {
                 'state': self.supervisor.state,
                 'execution_mode': self.supervisor.execution_mode(),
@@ -129,8 +146,15 @@ class LiveRuntime:
     def _persist_status(self) -> None:
         if self.store is None:
             return
+        self._updated_at = self._utc_now()
         payload = self.store.read_status()
-        payload.update(self.status())
+        for key, value in self.status().items():
+            if isinstance(value, dict) and isinstance(payload.get(key), dict):
+                merged = dict(payload[key])
+                merged.update(value)
+                payload[key] = merged
+                continue
+            payload[key] = value
         self.store.write_status(payload)
 
     def _restore_persisted_state(self) -> None:
@@ -161,3 +185,6 @@ class LiveRuntime:
             'reduce_only': bool(intent.reduce_only),
             'metadata': dict(intent.metadata),
         }
+
+    def _utc_now(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
