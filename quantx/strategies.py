@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import inspect
 from statistics import mean, pstdev
@@ -11,6 +11,7 @@ from .repro import stable_hash
 
 class BaseStrategy:
     name = "base"
+    strategy_id = "base"
     version = "1.0.0"
     category = "custom"
     author = "unknown"
@@ -204,7 +205,7 @@ class DcaStrategy(BaseStrategy):
     name = "dca"
     category = "passive"
     author = "quantx"
-    description = "固定间隔定投"
+    description = "鍥哄畾闂撮殧瀹氭姇"
     default_params = {"buy_interval": 24, "buy_amount_usdt": 100}
     tags = ["dca", "passive"]
     risk_profile = "low"
@@ -218,7 +219,7 @@ class MaCrossoverStrategy(BaseStrategy):
     name = "ma_crossover"
     category = "trend"
     author = "quantx"
-    description = "均线交叉策略"
+    description = "鍧囩嚎浜ゅ弶绛栫暐"
     default_params = {"fast_period": 10, "slow_period": 30, "ma_type": "sma"}
     tags = ["ma", "trend"]
 
@@ -249,7 +250,7 @@ class MacdStrategy(BaseStrategy):
     name = "macd"
     category = "trend"
     author = "quantx"
-    description = "MACD金叉/死叉"
+    description = "MACD閲戝弶/姝诲弶"
     default_params = {"fast_period": 12, "slow_period": 26, "signal_period": 9}
     tags = ["macd", "trend"]
 
@@ -297,7 +298,7 @@ class BreakoutStrategy(BaseStrategy):
     name = "cta_strategy"
     category = "trend"
     author = "quantx"
-    description = "CTA趋势策略（原Breakout/Donchian）"
+    description = "CTA trend strategy (legacy Breakout/Donchian)"
     default_params = {
         "lookback": 200,
         "donchian_exit_lookback": 50,
@@ -346,7 +347,7 @@ class RsiReversalStrategy(BaseStrategy):
     name = "rsi_reversal"
     category = "mean_reversion"
     author = "quantx"
-    description = "RSI反转"
+    description = "RSI鍙嶈浆"
     default_params = {"rsi_period": 14, "oversold": 30, "overbought": 70}
     tags = ["rsi", "mean-reversion"]
 
@@ -374,7 +375,7 @@ class BollingerBandsStrategy(BaseStrategy):
     name = "bollinger_bands"
     category = "mean_reversion"
     author = "quantx"
-    description = "布林带突破/回归"
+    description = "甯冩灄甯︾獊鐮?鍥炲綊"
     default_params = {"bb_period": 20, "bb_std": 2.0}
     tags = ["bollinger", "mean-reversion"]
 
@@ -406,7 +407,7 @@ class GridStrategy(BaseStrategy):
     name = "grid"
     category = "mean_reversion"
     author = "quantx"
-    description = "网格交易"
+    description = "缃戞牸浜ゆ槗"
     default_params = {"grid_count": 10, "grid_spacing_pct": 0.01}
     tags = ["grid", "mean-reversion"]
 
@@ -430,7 +431,7 @@ class TsmomStrategy(BaseStrategy):
     name = "tsmom"
     category = "trend"
     author = "quantx"
-    description = "Time-Series Momentum（时序动量）"
+    description = "Time-Series Momentum锛堟椂搴忓姩閲忥級"
     default_params = {"momentum_window": 120, "threshold": 0.05}
     tags = ["momentum", "trend", "tsmom"]
 
@@ -494,10 +495,10 @@ class BreakoutMomentumOverlayStrategy(BaseStrategy):
 
 
 class ScalpingCryptoStrategy(BaseStrategy):
-    name = "剥头皮"
+    name = "鍓ュご鐨?"
     category = "scalping"
     author = "quantx"
-    description = "Crypto 合约确认型剥头皮：关键位 + CVD代理 + 主动成交推动 + OI代理 + 回抽确认"
+    description = "Crypto 鍚堢害纭鍨嬪墺澶寸毊锛氬叧閿綅 + CVD浠ｇ悊 + 涓诲姩鎴愪氦鎺ㄥ姩 + OI浠ｇ悊 + 鍥炴娊纭"
     default_params = {
         "key_level_lookback": 48,
         "key_level_tolerance": 0.0025,
