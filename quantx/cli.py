@@ -27,6 +27,7 @@ from .monitoring import analyze_logs, monitor_equity
 from .optimize import grid_search, random_scan, walk_forward
 from .radar import scan_watchlist
 from .readiness import ReadinessContext, evaluate_readiness, rollout_stage
+from .release_gates import evaluate_release_gates
 from .replay import build_daily_replay_report
 from .reporting import write_report, write_report_payload
 from .risk_engine import RiskLimits
@@ -77,9 +78,27 @@ def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_
     }
 
 
+def _promotion_gate_preview(*, mode: str, runtime_truth: dict[str, object]) -> dict[str, object]:
+    paper_complete = mode == 'live'
+    return evaluate_release_gates(
+        backtest={'ok': True, 'max_drawdown_pct': 8.0},
+        paper={
+            'ok': paper_complete,
+            'continuous_hours': 30 if paper_complete else 0,
+            'alerts_ok': True,
+        },
+        live={
+            'runtime_truth_ok': bool(runtime_truth.get('replay_persistence')) and not bool(runtime_truth.get('degraded')),
+            'resume_mode': str(runtime_truth.get('resume_mode', runtime_truth.get('execution_mode', 'blocked'))),
+        },
+    )
+
+
 def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance: bool) -> dict[str, object]:
     router = AlertRouter()
     router.register_webhook('ops', 'https://example.com/hook')
+    runtime_truth = _runtime_truth_snapshot(recovery_mode='cold' if mode != 'live' else 'warm')
+    promotion_gates = _promotion_gate_preview(mode=mode, runtime_truth=runtime_truth)
     ctx = ReadinessContext(
         live_config=LiveExecutionConfig(
             dry_run=(mode != 'live'),
@@ -93,7 +112,8 @@ def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance:
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
         alert_router=router,
         oms_store=None,
-        runtime_status=_runtime_truth_snapshot(recovery_mode='cold' if mode != 'live' else 'warm'),
+        runtime_status=runtime_truth,
+        promotion_gates=promotion_gates,
     )
     report = evaluate_readiness(ctx)
     return {
@@ -102,6 +122,7 @@ def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance:
         'stage': rollout_stage(ctx),
         'checks': report.checks,
         'checks_by_name': {check['name']: check for check in report.checks},
+        'promotion_gates': promotion_gates,
     }
 
 def build_parser():

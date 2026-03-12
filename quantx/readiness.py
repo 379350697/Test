@@ -1,4 +1,4 @@
-﻿"""Operational readiness checks for live rollout gates."""
+"""Operational readiness checks for live rollout gates."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ class ReadinessContext:
     alert_router: AlertRouter
     oms_store: JsonlOMSStore | None = None
     runtime_status: dict[str, Any] | None = None
+    promotion_gates: dict[str, Any] | None = None
 
 
 def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
@@ -100,6 +101,13 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         _paper_closure_ready(ctx),
         'paper closure requires rollout symbols and cycle limits to be configured',
     )
+    if ctx.promotion_gates is not None:
+        _append_check(
+            checks,
+            'promotion_stage_gate',
+            _promotion_stage_ready(ctx.promotion_gates),
+            'shared promotion gates must explicitly allow live rollout before enabling live capital',
+        )
     _append_check(
         checks,
         'live_truth_replay_persistence',
@@ -180,6 +188,12 @@ def _paper_closure_ready(ctx: ReadinessContext) -> bool:
         and ctx.live_config.max_notional_per_cycle is not None
         and ctx.live_config.max_notional_per_cycle > 0
     )
+
+
+def _promotion_stage_ready(promotion_gates: dict[str, Any]) -> bool:
+    eligible_stage = str(promotion_gates.get('eligible_stage', 'backtest_only'))
+    failed_gates = promotion_gates.get('failed_gates', [])
+    return eligible_stage in {'live_ready', 'live'} and len(failed_gates) == 0
 
 
 def rollout_stage(ctx: ReadinessContext) -> str:
