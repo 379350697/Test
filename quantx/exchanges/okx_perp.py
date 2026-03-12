@@ -67,7 +67,7 @@ class OKXPerpAdapter:
         return AccountEvent(
             exchange=self.exchange,
             ts=self._normalize_ts(payload.get('uTime') or payload.get('ts')),
-            event_type='position',
+            event_type='position_snapshot',
             payload={
                 'symbol': str(payload.get('instId', '')).upper(),
                 'position_side': str(payload.get('posSide', 'net')).lower(),
@@ -81,7 +81,7 @@ class OKXPerpAdapter:
         return AccountEvent(
             exchange=self.exchange,
             ts=self._normalize_ts(payload.get('uTime') or payload.get('ts')),
-            event_type='account',
+            event_type='account_snapshot',
             payload={
                 'currency': str(payload.get('ccy', 'USDT')).upper(),
                 'equity': float(payload.get('eq', 0.0) or 0.0),
@@ -89,6 +89,18 @@ class OKXPerpAdapter:
                 'used_margin': float(payload.get('imr', 0.0) or 0.0),
                 'maintenance_margin': float(payload.get('mmr', 0.0) or 0.0),
                 'unrealized_pnl': float(payload.get('upl', 0.0) or 0.0),
+            },
+        )
+
+    def normalize_funding_event(self, payload: dict[str, Any]) -> AccountEvent:
+        return AccountEvent(
+            exchange=self.exchange,
+            ts=self._normalize_ts(payload.get('ts')),
+            event_type='funding',
+            payload={
+                'symbol': str(payload.get('instId', '')).upper(),
+                'position_side': str(payload.get('posSide', 'long')).lower(),
+                'amount': float(payload.get('funding', 0.0) or 0.0),
             },
         )
 
@@ -142,3 +154,4 @@ class OKXPerpAdapter:
         if text.isdigit():
             return datetime.fromtimestamp(int(text) / 1000, tz=timezone.utc).isoformat()
         return text.replace('Z', '+00:00')
+

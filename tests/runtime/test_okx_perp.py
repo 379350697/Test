@@ -69,13 +69,13 @@ def test_okx_perp_adapter_normalizes_order_fill_position_and_account_events():
     assert fill.fee == -0.2
 
     assert isinstance(position, AccountEvent)
-    assert position.event_type == 'position'
+    assert position.event_type == 'position_snapshot'
     assert position.payload['symbol'] == 'BTC-USDT-SWAP'
     assert position.payload['position_side'] == 'long'
     assert position.payload['margin_mode'] == 'cross'
 
     assert isinstance(account, AccountEvent)
-    assert account.event_type == 'account'
+    assert account.event_type == 'account_snapshot'
     assert account.payload['equity'] == 1000.0
     assert account.payload['available_margin'] == 800.0
 
@@ -104,3 +104,41 @@ def test_okx_perp_adapter_maps_rest_place_response_to_runtime_ack():
     assert event.status == 'acked'
     assert event.client_order_id == 'cid-1'
     assert event.payload['position_side'] == 'long'
+
+def test_okx_perp_adapter_normalizes_funding_and_reconciliation_only_snapshots():
+    adapter = OKXPerpAdapter()
+
+    funding = adapter.normalize_funding_event(
+        {
+            'instId': 'BTC-USDT-SWAP',
+            'posSide': 'long',
+            'funding': '-0.2',
+            'ts': '1710230400000',
+        }
+    )
+    position = adapter.normalize_position_event(
+        {
+            'instId': 'BTC-USDT-SWAP',
+            'posSide': 'long',
+            'pos': '2',
+            'avgPx': '101',
+            'mgnMode': 'cross',
+            'uTime': '1710201602000',
+        }
+    )
+    account = adapter.normalize_account_event(
+        {
+            'ccy': 'USDT',
+            'eq': '1000',
+            'availEq': '800',
+            'imr': '120',
+            'mmr': '50',
+            'upl': '25',
+            'uTime': '1710201603000',
+        }
+    )
+
+    assert funding.event_type == 'funding'
+    assert funding.payload['amount'] == -0.2
+    assert position.event_type == 'position_snapshot'
+    assert account.event_type == 'account_snapshot'
