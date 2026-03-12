@@ -1,4 +1,4 @@
-﻿"""Bootstrap helpers for safe restart takeover in live trading."""
+"""Bootstrap helpers for safe restart takeover in live trading."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ from .live_service import LiveExecutionService
 from .oms import JsonlOMSStore, OrderManager
 from .runtime.health import RuntimeHealthState
 from .runtime.replay_store import RuntimeReplayStore
+
+
+LIVE_BOOTSTRAP_RESUME_MODES = {'reduce_only', 'live'}
 
 
 @dataclass(slots=True)
@@ -28,6 +31,7 @@ class BootstrapTakeoverReport:
     missing_on_exchange: list[str]
     unmanaged_on_exchange: list[str]
     notes: list[str]
+    promotion_policy: dict[str, Any]
 
 
 _ID_KEYS = ("clientOrderId", "client_order_id", "origClientOrderId", "clOrdId", "orderId", "id")
@@ -102,6 +106,26 @@ def _derive_resume_mode(
     if missing_on_exchange or unmanaged_on_exchange:
         return 'reduce_only'
     return 'live'
+
+
+def _build_promotion_policy(*, recovery_mode: str, resume_mode: str, runtime_status: dict[str, Any]) -> dict[str, Any]:
+    runtime_truth_ok = (
+        bool(runtime_status.get('replay_persistence'))
+        and not bool(runtime_status.get('degraded'))
+        and bool(runtime_status.get('reconcile_ok', True))
+    )
+    live_capital_allowed = (
+        recovery_mode == 'warm'
+        and resume_mode in LIVE_BOOTSTRAP_RESUME_MODES
+        and runtime_truth_ok
+    )
+    return {
+        'recovery_mode': recovery_mode,
+        'resume_mode': resume_mode,
+        'runtime_truth_ok': runtime_truth_ok,
+        'requires_paper_soak': True,
+        'live_capital_allowed': live_capital_allowed,
+    }
 
 
 def bootstrap_recover_and_reconcile(
@@ -182,6 +206,11 @@ def bootstrap_recover_and_reconcile(
     if position_diffs:
         health.mark_reconcile({'ok': False, 'severity': 'block'})
     runtime_status = health.snapshot()
+    promotion_policy = _build_promotion_policy(
+        recovery_mode=recovery_mode,
+        resume_mode=resume_mode,
+        runtime_status=runtime_status,
+    )
 
     report = BootstrapTakeoverReport(
         ok=(len(notes) == 0),
@@ -199,5 +228,6 @@ def bootstrap_recover_and_reconcile(
         missing_on_exchange=missing_on_exchange,
         unmanaged_on_exchange=unmanaged_on_exchange,
         notes=notes,
+        promotion_policy=promotion_policy,
     )
     return asdict(report)

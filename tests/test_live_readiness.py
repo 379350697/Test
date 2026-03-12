@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import urllib.error
@@ -20,6 +20,26 @@ def _router_with_webhook() -> AlertRouter:
     router = AlertRouter()
     router.register_webhook('ops', 'https://example.com/hook')
     return router
+
+
+def _live_ready_promotion_gates(
+    *,
+    eligible_stage: str = 'live_ready',
+    failed_gates: list[str] | None = None,
+    paper_soak_ok: bool = True,
+) -> dict[str, object]:
+    failures = list(failed_gates or [])
+    return {
+        'eligible_stage': eligible_stage,
+        'failed_gates': failures,
+        'checks': {
+            'backtest_quality': {'ok': 'backtest_quality' not in failures},
+            'paper_soak_duration': {'ok': paper_soak_ok and 'paper_soak_duration' not in failures},
+            'paper_alerts': {'ok': 'paper_alerts' not in failures},
+            'runtime_truth': {'ok': 'runtime_truth' not in failures},
+            'resume_mode': {'ok': 'resume_mode' not in failures},
+        },
+    }
 
 
 class DummyExchange:
@@ -358,6 +378,7 @@ def test_readiness_evaluator_flags_missing_gates(tmp_path):
     names = {c["name"]: c for c in rep.checks}
     assert not names["rollout_allowed_symbols"]["ok"]
     assert not names["alert_channel_registered"]["ok"]
+    assert not names["promotion_stage_gate"]["ok"]
 
 
 
@@ -387,6 +408,44 @@ def test_readiness_blocks_normal_live_when_runtime_truth_is_degraded_or_unrecove
     assert checks['live_truth_reconcile_ok']['ok'] is False
 
 
+def test_readiness_requires_backtest_paper_and_runtime_promotion_gates_before_live(tmp_path):
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=('BTC-USDT-SWAP',),
+            max_orders_per_cycle=1,
+            max_notional_per_cycle=1000.0,
+            runtime_mode='derivatives',
+            exchange='okx',
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
+        alert_router=_router_with_webhook(),
+        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        runtime_status={
+            'replay_persistence': True,
+            'degraded': False,
+            'reconcile_ok': True,
+            'stream': {'stale': False},
+            'execution_mode': 'live',
+            'resume_mode': 'blocked',
+            'recovery_mode': 'cold',
+        },
+        promotion_gates=_live_ready_promotion_gates(
+            eligible_stage='paper_only',
+            failed_gates=['paper_soak_duration'],
+            paper_soak_ok=False,
+        ),
+    )
+
+    report = evaluate_readiness(ctx)
+    checks = {check['name']: check for check in report.checks}
+
+    assert checks['promotion_stage_gate']['ok'] is False
+    assert checks['bootstrap_resume_mode_gate']['ok'] is False
+    assert checks['live_truth_replay_persistence']['ok'] is True
+    assert checks['micro_live_ready']['ok'] is False
+
+
 def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
     router = AlertRouter()
     router.register_webhook("ops", "https://example.com/hook")
@@ -403,7 +462,16 @@ def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
         alert_router=router,
         oms_store=store,
-        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
+        runtime_status={
+            'replay_persistence': True,
+            'degraded': False,
+            'reconcile_ok': True,
+            'stream': {'stale': False},
+            'execution_mode': 'live',
+            'resume_mode': 'live',
+            'recovery_mode': 'warm',
+        },
+        promotion_gates=_live_ready_promotion_gates(),
     )
 
     rep = evaluate_readiness(ctx)
@@ -441,7 +509,16 @@ def test_readiness_assert_ready_and_blockers(tmp_path):
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
         alert_router=router,
         oms_store=JsonlOMSStore(str(tmp_path / "oms" / "events.jsonl")),
-        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
+        runtime_status={
+            'replay_persistence': True,
+            'degraded': False,
+            'reconcile_ok': True,
+            'stream': {'stale': False},
+            'execution_mode': 'live',
+            'resume_mode': 'live',
+            'recovery_mode': 'warm',
+        },
+        promotion_gates=_live_ready_promotion_gates(),
     )
     final = assert_ready(ok_ctx)
     assert final.ok

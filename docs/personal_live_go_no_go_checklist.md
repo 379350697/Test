@@ -1,40 +1,56 @@
-# 个人实盘 Go/No-Go 清单（QuantX）
+# Personal Live Go/No-Go Checklist (QuantX)
 
-> 目标：在不引入企业级复杂流程的前提下，用最小动作保障个人实盘安全。
+## Goal
+Use the same machine-readable contract for backtest, paper soak, bootstrap takeover, and first live capital.
 
-## A. 安全（必须全部满足）
-- [ ] API Key 仅从环境变量读取（不进 Git、不写代码常量）。
-- [ ] 交易所权限最小化：仅交易权限，关闭提现权限。
-- [ ] 账户启用 2FA 与设备风控（交易所侧）。
-- [ ] 运行机器开启磁盘加密/登录口令。
+## Promotion Contract
+Before any live rollout, all of the following readiness checks must be `ok=true`:
 
-## B. 上线前演练（必须）
-- [ ] `dry_run=True` 连续运行 >= 24h。
-- [ ] readiness 检查全绿（`assert_ready` 不抛错）。
-- [ ] 白名单 symbols/每轮订单数/每轮名义金额上限已配置。
-- [ ] 异常告警链路可达（webhook 可正常发送）。
+- `promotion_stage_gate`
+- `bootstrap_resume_mode_gate`
+- `live_truth_replay_persistence`
+- `live_truth_not_degraded`
+- `live_truth_reconcile_ok`
+- `live_truth_stream_fresh`
+- `live_truth_execution_mode_allowed`
+- `paper_closure_ready`
+- `oms_persistence_enabled`
 
-## C. 灰度上线（必须）
-- [ ] 首日仅 1-2 个白名单品种。
-- [ ] 单笔风险和 max_order_notional 设置为平时 20%-30%。
-- [ ] 观察日志与告警连续 2-3 个交易周期无异常后再放大。
+## What `promotion_stage_gate` Means
+`promotion_stage_gate` is only green when the shared promotion report says the strategy is ready for live review.
 
-## D. 回滚策略（必须）
-- [ ] 出现连续下单失败/风控误触发时立即切回 `dry_run=True`。
-- [ ] 保留最近 N 天 JSONL 日志与 OMS/Audit 文件用于复盘。
-- [ ] 每次参数变更记录一行变更日志（时间、参数、原因）。
+Required promotion sub-checks:
 
-## E. 推荐命令（上线前）
+- `backtest_quality`
+- `paper_soak_duration`
+- `paper_alerts`
+- `runtime_truth`
+- `resume_mode`
+
+Expected shared gate output:
+
+- `eligible_stage` is `live_ready` or `live`
+- `failed_gates` is empty
+
+## What `bootstrap_resume_mode_gate` Means
+Run `bootstrap_recover_and_reconcile(...)` before enabling live capital.
+
+The bootstrap output should show:
+
+- `resume_mode` is `reduce_only` or `live`
+- `promotion_policy.resume_mode` matches the same value
+- `promotion_policy.live_capital_allowed` is `true` only after warm recovery and healthy runtime truth
+
+If bootstrap returns `resume_mode=blocked` or `resume_mode=read_only`, stay in paper or operator review.
+
+## Operator Checklist
+- Confirm the latest backtest and paper soak reports were generated from the same strategy/config you plan to trade.
+- Confirm `replay-daily` shows no blocking incidents and no recommendation to hold in paper.
+- Confirm bootstrap takeover produced no unresolved position or open-order mismatches.
+- Start with a small whitelist and capped notional even after all gates are green.
+
+## Suggested Commands
 ```bash
 pytest -q
-python -m ruff check .
-python -m mypy quantx tests
-python -m pip_audit
-python -m bandit -q -r quantx -c .bandit
-```
-
-
-## F. 日终复盘（推荐）
-```bash
 quantx replay-daily --events runtime/events.jsonl --oms runtime/oms/events.jsonl --audit runtime/audit/events.jsonl --json
 ```

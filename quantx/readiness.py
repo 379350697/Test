@@ -11,6 +11,16 @@ from .live_service import LiveExecutionConfig
 from .oms import JsonlOMSStore
 from .risk_engine import RiskLimits
 
+LIVE_PROMOTION_STAGES = {'live_ready', 'live'}
+LIVE_PROMOTION_CHECKS = (
+    'backtest_quality',
+    'paper_soak_duration',
+    'paper_alerts',
+    'runtime_truth',
+    'resume_mode',
+)
+LIVE_BOOTSTRAP_RESUME_MODES = {'reduce_only', 'live'}
+
 
 @dataclass(slots=True)
 class ReadinessReport:
@@ -34,6 +44,9 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
     runtime_status = ctx.runtime_status or {}
     stream_status = runtime_status.get('stream', {}) if isinstance(runtime_status.get('stream'), dict) else {}
     execution_mode = str(runtime_status.get('execution_mode', 'live'))
+    promotion_stage_ok = _promotion_stage_ready(ctx.promotion_gates or {})
+    bootstrap_resume_mode_ok = _bootstrap_resume_mode_ready(runtime_status)
+    requires_live_promotion_contract = _live_promotion_contract_required(ctx)
 
     _append_check(
         checks,
@@ -101,13 +114,22 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         _paper_closure_ready(ctx),
         'paper closure requires rollout symbols and cycle limits to be configured',
     )
-    if ctx.promotion_gates is not None:
+
+    if requires_live_promotion_contract or ctx.promotion_gates is not None:
         _append_check(
             checks,
             'promotion_stage_gate',
-            _promotion_stage_ready(ctx.promotion_gates),
-            'shared promotion gates must explicitly allow live rollout before enabling live capital',
+            promotion_stage_ok,
+            'shared promotion gates must confirm backtest quality, paper soak, and runtime truth before live capital is enabled',
         )
+    if requires_live_promotion_contract or ctx.promotion_gates is not None or 'resume_mode' in runtime_status:
+        _append_check(
+            checks,
+            'bootstrap_resume_mode_gate',
+            bootstrap_resume_mode_ok,
+            'bootstrap recovery must resume in reduce_only or live mode before enabling live capital',
+        )
+
     _append_check(
         checks,
         'live_truth_replay_persistence',
@@ -149,8 +171,10 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         and (not bool(runtime_status.get('degraded')))
         and bool(runtime_status.get('reconcile_ok', True))
         and (not bool(stream_status.get('stale')))
-        and execution_mode in {'live', 'reduce_only'},
-        'micro-live requires paper closure, alerts, OMS persistence, and healthy runtime truth state',
+        and execution_mode in {'live', 'reduce_only'}
+        and promotion_stage_ok
+        and bootstrap_resume_mode_ok,
+        'micro-live requires promotion gates, bootstrap resume approval, alerts, OMS persistence, and healthy runtime truth state',
     )
 
     has_oms_store = ctx.oms_store is not None
@@ -190,10 +214,30 @@ def _paper_closure_ready(ctx: ReadinessContext) -> bool:
     )
 
 
+def _live_promotion_contract_required(ctx: ReadinessContext) -> bool:
+    return not ctx.live_config.dry_run
+
+
 def _promotion_stage_ready(promotion_gates: dict[str, Any]) -> bool:
+    if not promotion_gates:
+        return False
     eligible_stage = str(promotion_gates.get('eligible_stage', 'backtest_only'))
     failed_gates = promotion_gates.get('failed_gates', [])
-    return eligible_stage in {'live_ready', 'live'} and len(failed_gates) == 0
+    return (
+        eligible_stage in LIVE_PROMOTION_STAGES
+        and len(failed_gates) == 0
+        and all(_promotion_gate_check_ok(promotion_gates, check_name) for check_name in LIVE_PROMOTION_CHECKS)
+    )
+
+
+def _promotion_gate_check_ok(promotion_gates: dict[str, Any], check_name: str) -> bool:
+    checks = promotion_gates.get('checks', {}) if isinstance(promotion_gates.get('checks'), dict) else {}
+    details = checks.get(check_name, {}) if isinstance(checks, dict) else {}
+    return bool(details.get('ok', False)) if isinstance(details, dict) else False
+
+
+def _bootstrap_resume_mode_ready(runtime_status: dict[str, Any]) -> bool:
+    return str(runtime_status.get('resume_mode', 'blocked')) in LIVE_BOOTSTRAP_RESUME_MODES
 
 
 def rollout_stage(ctx: ReadinessContext) -> str:

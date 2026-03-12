@@ -1,18 +1,41 @@
-# 重启接管运行手册（有持仓场景）
+# Restart Takeover Runbook (Live Positions Present)
 
-## 目标
-当系统重启时，在不丢失仓位上下文的情况下恢复 OMS 并与交易所状态对账，避免重复下单/裸仓。
+## Goal
+Recover local OMS state, reconcile against exchange truth, and fail closed unless bootstrap policy allows safe resumption.
 
-## 标准流程
-1. 使用 `JsonlOMSStore` + `OrderManager.recover` 恢复本地订单和仓位快照。
-2. 启动执行服务后先调用 `reconcile()` 拉取交易所 `open_orders` 与 `positions`。
-3. 运行 `bootstrap_recover_and_reconcile(...)` 生成接管报告：
+## Standard Flow
+1. Recover local state with `JsonlOMSStore` and `OrderManager.recover(...)`.
+2. Call `bootstrap_recover_and_reconcile(...)` before any live order submission.
+3. Inspect the takeover report fields:
    - `position_diffs`
    - `missing_on_exchange`
    - `unmanaged_on_exchange`
-4. 报告 `ok=false` 时，不进入 live 下单，先人工处理差异。
-5. 报告 `ok=true` 后，先小流量验证再恢复常规执行。
+   - `resume_mode`
+   - `promotion_policy`
+4. Keep live capital disabled until readiness checks are green.
 
-## 建议
-- 重启默认 `dry_run=True`，对账通过后再放开。
-- 重启后当日执行 `replay-daily` 做复盘闭环。
+## Bootstrap Policy Mapping
+Use bootstrap output to feed the live promotion contract:
+
+- `resume_mode` maps to readiness check `bootstrap_resume_mode_gate`
+- `promotion_policy.runtime_truth_ok` should agree with the `live_truth_*` readiness checks
+- `promotion_policy.live_capital_allowed` is only advisory; the final decision still depends on readiness checks and shared promotion gates
+
+## Resume Rules
+- `resume_mode=blocked`: do not place live orders; investigate cold recovery or missing runtime truth.
+- `resume_mode=read_only`: reconcile positions/orders first; do not add new risk.
+- `resume_mode=reduce_only`: close or reduce risk only until the rest of the contract is green.
+- `resume_mode=live`: bootstrap takeover allows progression to the full readiness review.
+
+## Final Gate Before Orders
+After takeover, run readiness and confirm these checks are green before live rollout:
+
+- `promotion_stage_gate`
+- `bootstrap_resume_mode_gate`
+- `live_truth_replay_persistence`
+- `live_truth_not_degraded`
+- `live_truth_reconcile_ok`
+- `live_truth_stream_fresh`
+- `live_truth_execution_mode_allowed`
+
+If any of the checks above is red, stay in paper or operator review and rerun takeover after remediation.
