@@ -148,3 +148,16 @@ def test_bootstrap_recover_and_reconcile_returns_blocked_resume_mode_for_cold_re
     assert report['recovery_mode'] == 'cold'
     assert report['resume_mode'] == 'blocked'
     assert report['runtime_status']['degraded'] is True
+
+
+def test_bootstrap_and_runtime_health_fail_closed_after_cold_recovery(tmp_path):
+    report = bootstrap_recover_and_reconcile(
+        service=_StubService({'open_orders': [], 'positions': [], 'symbol_rules': {}}),
+        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'missing.jsonl'),
+        initial_cash=1000.0,
+        symbol='BTC-USDT-SWAP',
+    )
+
+    assert report['resume_mode'] == 'blocked'
+    assert report['runtime_status']['execution_mode'] == 'blocked'

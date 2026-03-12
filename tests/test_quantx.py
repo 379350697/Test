@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 import pytest
 
@@ -40,7 +40,7 @@ def test_builtin_strategy_registry_contains_core_and_aliases():
         "grid",
         "tsmom",
         "breakout_momo",
-        "閸撱儱銇旈惃?",
+        "鍓ュご鐨?",
     }
     assert expected_core.issubset(set(STRATEGY_REGISTRY))
     assert STRATEGY_REGISTRY["breakout"] is STRATEGY_REGISTRY["cta_strategy"]
@@ -78,8 +78,8 @@ def test_breakout_strategy_default_lookback_is_applied_in_signal():
 
 
 def test_scalping_strategy_registry_and_signal():
-    assert STRATEGY_REGISTRY["scalping"] is STRATEGY_REGISTRY["閸撱儱銇旈惃?"]
-    strategy = get_strategy_class("閸撱儱銇旈惃?")(min_score=4)
+    assert STRATEGY_REGISTRY["scalping"] is STRATEGY_REGISTRY["鍓ュご鐨?"]
+    strategy = get_strategy_class("鍓ュご鐨?")(min_score=4)
 
     candles = []
     for i in range(60):

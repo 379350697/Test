@@ -67,6 +67,9 @@ class RuntimeHealthState:
         self.stream_reconcile_required = True
         self.last_degrade_reason = 'stream_disconnected'
 
+    def mark_stream_gap(self, ts: str, *, reason: str) -> None:
+        self.mark_stream_disconnected(ts, reason=reason)
+
     def mark_stream_snapshot(self, snapshot: dict[str, Any]) -> None:
         if 'connected_at' in snapshot and snapshot.get('connected_at') is not None:
             self.stream_started_ts = str(snapshot.get('connected_at'))
@@ -165,3 +168,4 @@ class RuntimeHealthState:
         if now_dt is None or anchor_dt is None:
             return False
         return (now_dt - anchor_dt).total_seconds() > stale_after_s
+

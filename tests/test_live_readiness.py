@@ -761,3 +761,18 @@ def test_live_service_private_stream_updates_runtime_health_and_ingests_messages
     assert status['stream']['state'] == 'connected'
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
 
+
+
+def test_live_service_blocks_new_risk_until_reconcile_clears_after_stream_gap(tmp_path):
+    svc = LiveExecutionService(
+        DummyExchange(),
+        config=LiveExecutionConfig(dry_run=True, exchange='okx', runtime_mode='derivatives'),
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'events.jsonl'),
+    )
+    svc.runtime_coordinator.health.mark_stream_gap('2026-03-12T00:00:10+00:00', reason='disconnect')
+
+    blocked = svc.execute_orders([
+        {'symbol': 'BTCUSDT', 'side': 'BUY', 'qty': 0.01, 'price': 50000.0}
+    ])
+
+    assert blocked['ok'] is False
