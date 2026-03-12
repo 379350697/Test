@@ -2,6 +2,7 @@ from .events import AccountEvent, EventKind, FillEvent, MarketEvent, OrderEvent
 from .fill_engine import FillEngine, FillEngineConfig
 from .ledger_engine import LedgerEngine
 from .models import AccountLedger, OrderIntent, PositionLeg, TrackedOrder
+from .paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
 from .order_engine import OrderEngine, OrderStateError
 from .runtime_risk import RuntimeRiskLimits, RuntimeRiskValidator
 from .session import RuntimeSession
@@ -28,6 +29,8 @@ __all__ = [
     'OrderEngine',
     'OrderEvent',
     'OrderIntent',
+    'PaperExchangeConfig',
+    'PaperExchangeSimulator',
     'OrderStateError',
     'PositionLeg',
     'RuntimeRiskLimits',

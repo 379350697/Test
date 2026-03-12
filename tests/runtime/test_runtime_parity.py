@@ -67,6 +67,7 @@ def test_paper_runtime_executor_tracks_short_positions_with_runtime_trace():
     assert sell['accepted'] is True
     assert sell['filled'] is True
     assert ex.state.positions['BTCUSDT'] == pytest.approx(-0.5)
+    assert ex.state.runtime['mode'] == 'paper'
     assert ex.state.runtime['orders'][-1]['status'] == 'filled'
     assert ex.state.runtime['orders'][-1]['position_side'] == 'short'
 

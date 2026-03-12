@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .events import AccountEvent, FillEvent, MarketEvent, OrderEvent
@@ -36,7 +36,7 @@ class FillEngine:
     _trade_seq: int = 0
 
     def submit_order(self, order: TrackedOrder, exchange: str, ts: str) -> list[OrderEvent]:
-        self._active_orders[order.client_order_id] = _ActiveOrder(order=order, exchange=exchange)
+        self._active_orders[order.client_order_id] = _ActiveOrder(order=replace(order), exchange=exchange)
         return [
             self._make_order_event(order, exchange, ts, 'submitted'),
             self._make_order_event(order, exchange, ts, 'acked'),

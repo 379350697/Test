@@ -1,13 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .runtime.events import FillEvent, MarketEvent, OrderEvent
-from .runtime.fill_engine import FillEngine, FillEngineConfig
-from .runtime.ledger_engine import LedgerEngine
+from .runtime.events import FillEvent, MarketEvent
 from .runtime.models import OrderIntent
-from .runtime.order_engine import OrderEngine
+from .runtime.paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
 
 
 @dataclass
@@ -24,17 +22,13 @@ class PaperLiveExecutor:
     def __init__(self, mode: str = 'paper', initial_cash: float = 10_000.0):
         if mode not in {'paper', 'live'}:
             raise ValueError('mode must be paper/live')
-        self.state = ExecutionState(
-            mode=mode,
-            runtime={'mode': mode, 'orders': [], 'order_state_sequences': {}, 'ledger': {}, 'positions': {}},
-        )
-        self._order_engine = OrderEngine()
-        self._ledger_engine = LedgerEngine(wallet_balance=initial_cash)
-        self._fill_engine = FillEngine(FillEngineConfig(queue_delay_ticks=1, partial_fill_ratio=1.0, slippage_bps=0.0))
+        self.state = ExecutionState(mode=mode)
         self._market_prices: dict[str, float] = {}
-        self._order_ids: list[str] = []
-        self._order_state_sequences: dict[str, list[str]] = {}
-        self._sequence = 0
+        self._paper_exchange = PaperExchangeSimulator(
+            initial_cash=initial_cash,
+            config=PaperExchangeConfig(mode=mode),
+        )
+        self._sync_state()
 
     def arm(self):
         self.state.enabled = True
@@ -111,11 +105,14 @@ class PaperLiveExecutor:
             'position_side': resolved_position_side,
             **extra,
         }
+        if order is not None:
+            rec['client_order_id'] = order['client_order_id']
         self.state.logs.append(f'{self._now()} order={rec}')
         return rec
 
     def close_all(self):
-        for symbol, sides in list(self.state.runtime.get('positions', {}).items()):
+        runtime_positions = self._paper_exchange.snapshot().get('positions', {})
+        for symbol, sides in list(runtime_positions.items()):
             long_leg = sides.get('long', {}) if isinstance(sides, dict) else {}
             short_leg = sides.get('short', {}) if isinstance(sides, dict) else {}
             long_qty = float(long_leg.get('qty', 0.0) or 0.0)
@@ -145,11 +142,6 @@ class PaperLiveExecutor:
         self.state.logs.append(f'{self._now()} close_all')
         return {'closed': True, 'positions': self.state.positions}
 
-    def _record_order_state(self, client_order_id: str, status: str) -> None:
-        sequence = self._order_state_sequences.setdefault(client_order_id, [])
-        if not sequence or sequence[-1] != status:
-            sequence.append(status)
-
     def _execute_runtime_order(
         self,
         *,
@@ -161,9 +153,7 @@ class PaperLiveExecutor:
         market_price: float,
         position_side: str,
         reduce_only: bool,
-    ) -> tuple[object, list[object]]:
-        self._sequence += 1
-        client_order_id = f'{self.state.mode}-{self._sequence}'
+    ) -> tuple[dict[str, object] | None, list[object]]:
         ts = self._now()
         intent = OrderIntent(
             symbol=symbol,
@@ -175,100 +165,31 @@ class PaperLiveExecutor:
             time_in_force='ioc' if order_type == 'market' else 'gtc',
             reduce_only=reduce_only,
         )
-        order = self._order_engine.create_intent(client_order_id, intent)
-        self._record_order_state(client_order_id, order.status)
-        self._order_ids.append(client_order_id)
-        emitted: list[object] = []
-
-        order = self._order_engine.apply_order_event(
-            OrderEvent(
-                symbol=symbol,
-                exchange=self.state.mode,
-                ts=ts,
-                client_order_id=client_order_id,
-                exchange_order_id=client_order_id,
-                status='risk_accepted',
-                payload={'source': 'runtime_executor'},
-            )
-        )
-        self._record_order_state(client_order_id, order.status)
-        submit_events = self._fill_engine.submit_order(order, exchange=self.state.mode, ts=ts)
-        for event in submit_events:
-            order = self._order_engine.apply_order_event(event)
-            self._record_order_state(client_order_id, order.status)
-            emitted.append(event)
-
-        market_events = self._fill_engine.on_market_event(
-            MarketEvent(
-                symbol=symbol,
-                exchange=self.state.mode,
-                channel='mark_price',
-                ts=ts,
-                payload={'price': market_price},
-            )
-        )
-        for event in market_events:
-            if isinstance(event, FillEvent):
-                order = self._order_engine.apply_fill_event(event)
-                self._record_order_state(client_order_id, order.status)
-                self._ledger_engine.apply_fill(event)
-            elif isinstance(event, OrderEvent):
-                order = self._order_engine.apply_order_event(event)
-                self._record_order_state(client_order_id, order.status)
-            emitted.append(event)
-
-        self._ledger_engine.apply_market_event(
-            MarketEvent(
-                symbol=symbol,
-                exchange=self.state.mode,
-                channel='mark_price',
-                ts=ts,
-                payload={'price': market_price},
+        emitted: list[object] = list(self._paper_exchange.submit_intents([intent], exchange_name=self.state.mode, ts=ts))
+        emitted.extend(
+            self._paper_exchange.on_market_event(
+                MarketEvent(
+                    symbol=symbol,
+                    exchange=self.state.mode,
+                    channel='mark_price',
+                    ts=ts,
+                    payload={'price': market_price},
+                )
             )
         )
         self._sync_state()
+        order = self.state.runtime['orders'][-1] if self.state.runtime.get('orders') else None
         return order, emitted
 
     def _sync_state(self) -> None:
+        runtime_snapshot = self._paper_exchange.snapshot()
         net_positions: dict[str, float] = {}
-        runtime_positions: dict[str, dict[str, dict[str, float]]] = {}
-        for (symbol, position_side), leg in self._ledger_engine.ledger.positions.items():
-            runtime_positions.setdefault(symbol, {})[position_side] = {
-                'qty': leg.qty,
-                'avg_entry_price': leg.avg_entry_price,
-                'realized_pnl': leg.realized_pnl,
-                'unrealized_pnl': leg.unrealized_pnl,
-                'fee_total': leg.fee_total,
-                'funding_total': leg.funding_total,
-            }
-            net_positions.setdefault(symbol, 0.0)
-            net_positions[symbol] += leg.qty if position_side == 'long' else -leg.qty
+        for symbol, sides in runtime_snapshot.get('positions', {}).items():
+            long_leg = sides.get('long', {}) if isinstance(sides, dict) else {}
+            short_leg = sides.get('short', {}) if isinstance(sides, dict) else {}
+            net_positions[symbol] = float(long_leg.get('qty', 0.0) or 0.0) - float(short_leg.get('qty', 0.0) or 0.0)
         self.state.positions = net_positions
-        self.state.runtime = {
-            'mode': self.state.mode,
-            'orders': [
-                {
-                    'client_order_id': self._order_engine.get_order(order_id).client_order_id,
-                    'status': self._order_engine.get_order(order_id).status,
-                    'filled_qty': self._order_engine.get_order(order_id).filled_qty,
-                    'side': self._order_engine.get_order(order_id).side,
-                    'position_side': self._order_engine.get_order(order_id).position_side,
-                }
-                for order_id in self._order_ids
-            ],
-            'order_state_sequences': {
-                order_id: list(self._order_state_sequences.get(order_id, [])) for order_id in self._order_ids
-            },
-            'ledger': {
-                'wallet_balance': self._ledger_engine.ledger.wallet_balance,
-                'equity': self._ledger_engine.ledger.equity,
-                'available_margin': self._ledger_engine.ledger.available_margin,
-                'used_margin': self._ledger_engine.ledger.used_margin,
-                'maintenance_margin': self._ledger_engine.ledger.maintenance_margin,
-                'risk_ratio': self._ledger_engine.ledger.risk_ratio,
-            },
-            'positions': runtime_positions,
-        }
+        self.state.runtime = runtime_snapshot
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()

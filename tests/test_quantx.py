@@ -421,6 +421,7 @@ def test_paper_executor_exposes_runtime_state_for_cli_like_flows():
 
     assert ex.state.positions['BTCUSDT'] == pytest.approx(-0.25)
     assert ex.state.runtime['mode'] == 'paper'
+    assert ex.state.runtime['orders']
     assert ex.state.runtime['ledger']['equity'] > 0
 
 
