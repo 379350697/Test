@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
@@ -26,6 +26,10 @@ class OKXPrivateStreamTransport:
         self.channels = channels
         self.websocket_factory = websocket_factory
         self._socket: Any | None = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._socket is not None
 
     def connect(self) -> None:
         if self._socket is not None:

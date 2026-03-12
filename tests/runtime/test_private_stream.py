@@ -24,3 +24,41 @@ def test_private_stream_supervisor_requires_reconcile_after_disconnect_and_recon
 
     assert snapshot['state'] == 'reconnected'
     assert snapshot['reconcile_required'] is True
+
+from quantx.exchanges.okx_private_stream import OKXPrivateStreamTransport
+
+
+class _SocketStub:
+    def __init__(self):
+        self.sent: list[str] = []
+        self.closed = False
+
+    def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    def recv(self) -> str:
+        return ''
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_okx_private_stream_transport_reconnects_after_close():
+    sockets: list[_SocketStub] = []
+
+    def factory(_url: str) -> _SocketStub:
+        socket = _SocketStub()
+        sockets.append(socket)
+        return socket
+
+    transport = OKXPrivateStreamTransport(websocket_factory=factory)
+
+    transport.connect()
+    assert transport.is_connected is True
+
+    transport.close()
+    assert transport.is_connected is False
+
+    transport.connect()
+    assert transport.is_connected is True
+    assert len(sockets) == 2
