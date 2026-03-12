@@ -574,6 +574,176 @@ def _build_autotrade_payload(args, *, enforce_ready: bool) -> dict[str, object]:
         },
     }
 
+def _autotrade_runtime_paths(args) -> dict[str, Path]:
+    state_dir = Path(args.oms).resolve().parent / 'autotrade'
+    return {
+        'state_dir': state_dir,
+        'config_path': state_dir / 'runtime_config.json',
+        'status_path': state_dir / 'status.json',
+    }
+
+
+def _autotrade_runtime_config(args, *, status_path: Path) -> dict[str, object]:
+    return {
+        'exchange': args.exchange,
+        'enable_binance': bool(args.enable_binance),
+        'strategy': args.strategy,
+        'strategy_params': _parse_strategy_params(args.strategy_params),
+        'watchlist': list(_parse_watchlist(args.watchlist)),
+        'total_margin': float(args.total_margin),
+        'max_symbol_weight': float(args.max_symbol_weight),
+        'max_leverage': float(args.max_leverage),
+        'max_orders_per_cycle': int(args.max_orders_per_cycle),
+        'max_notional_per_cycle': float(args.max_notional_per_cycle or 0.0),
+        'runtime_events': str(args.runtime_events or ''),
+        'status_path': str(status_path),
+    }
+
+
+def _seed_autotrade_runtime_store(payload: dict[str, object], *, pid: int | None = None) -> dict[str, object]:
+    supervisor = payload.get('supervisor', {}) if isinstance(payload.get('supervisor'), dict) else {}
+    runtime = payload.get('runtime', {}) if isinstance(payload.get('runtime'), dict) else {}
+    runtime_truth = runtime.get('runtime_truth', {}) if isinstance(runtime.get('runtime_truth'), dict) else {}
+    seed: dict[str, object] = {
+        'supervisor': {
+            'state': str(supervisor.get('state', 'warming')),
+            'execution_mode': str(supervisor.get('execution_mode', runtime.get('execution_mode', 'blocked'))),
+            'last_degrade_reason': runtime_truth.get('last_degrade_reason'),
+        },
+        'healthy_cycle_count': 0,
+        'watchlist': list((payload.get('strategy', {}) or {}).get('watchlist', [])) if isinstance(payload.get('strategy'), dict) else [],
+        'last_closed_bar_ts': {},
+        'runtime': {
+            'execution_path': 'runtime_core',
+            'stage': str(runtime.get('stage', 'micro_live')),
+        },
+        'runtime_truth': dict(runtime_truth),
+    }
+    if pid is not None:
+        seed['process'] = {'pid': int(pid)}
+    return seed
+
+
+def _spawn_autotrade_runtime(args, *, config_path: Path):
+    import subprocess
+    import sys
+
+    return subprocess.Popen([sys.executable, '-m', 'quantx.cli', 'autotrade-run', '--config', str(config_path)])
+
+
+def _build_autotrade_start_payload(args) -> dict[str, object]:
+    from .live_runtime_store import LiveRuntimeStore
+
+    payload = _build_autotrade_payload(args, enforce_ready=True)
+    paths = _autotrade_runtime_paths(args)
+    paths['state_dir'].mkdir(parents=True, exist_ok=True)
+
+    config_payload = _autotrade_runtime_config(args, status_path=paths['status_path'])
+    paths['config_path'].write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    process = _spawn_autotrade_runtime(args, config_path=paths['config_path'])
+    pid = int(getattr(process, 'pid', 0) or 0)
+    LiveRuntimeStore(paths['status_path']).write_status(_seed_autotrade_runtime_store(payload, pid=pid))
+
+    payload['process'] = {
+        'pid': pid,
+        'config_path': str(paths['config_path']),
+        'status_path': str(paths['status_path']),
+    }
+    runtime_payload = payload.get('runtime', {}) if isinstance(payload.get('runtime'), dict) else {}
+    runtime_payload['execution_path'] = 'runtime_core'
+    payload['runtime'] = runtime_payload
+    return payload
+
+
+def _build_autotrade_status_payload(args) -> dict[str, object]:
+    from .live_runtime_store import LiveRuntimeStore
+
+    payload = _build_autotrade_payload(args, enforce_ready=False)
+    paths = _autotrade_runtime_paths(args)
+    stored = LiveRuntimeStore(paths['status_path']).read_status()
+
+    runtime_payload = payload.get('runtime', {}) if isinstance(payload.get('runtime'), dict) else {}
+    runtime_payload['execution_path'] = 'runtime_core'
+    payload['runtime'] = runtime_payload
+
+    if not stored:
+        return payload
+
+    supervisor = stored.get('supervisor', {}) if isinstance(stored.get('supervisor'), dict) else {}
+    if isinstance(payload.get('supervisor'), dict):
+        payload['supervisor'].update({
+            'state': str(supervisor.get('state', payload['supervisor'].get('state', 'blocked'))),
+            'execution_mode': str(supervisor.get('execution_mode', payload['supervisor'].get('execution_mode', 'blocked'))),
+        })
+
+    stored_runtime = stored.get('runtime', {}) if isinstance(stored.get('runtime'), dict) else {}
+    runtime_truth = runtime_payload.get('runtime_truth', {}) if isinstance(runtime_payload.get('runtime_truth'), dict) else {}
+    stored_truth = stored.get('runtime_truth', {}) if isinstance(stored.get('runtime_truth'), dict) else {}
+    runtime_truth.update(stored_truth)
+    if supervisor:
+        runtime_truth['execution_mode'] = str(supervisor.get('execution_mode', runtime_truth.get('execution_mode', 'blocked')))
+    runtime_payload.update(stored_runtime)
+    runtime_payload['execution_path'] = str(stored_runtime.get('execution_path', 'runtime_core'))
+    runtime_payload['runtime_truth'] = runtime_truth
+    payload['runtime'] = runtime_payload
+
+    if isinstance(stored.get('process'), dict):
+        payload['process'] = dict(stored['process'])
+    return payload
+
+
+def _run_autotrade_runtime(args) -> dict[str, object]:
+    from .exchanges.okx_private_stream import OKXPrivateStreamTransport
+    from .live_market_driver import OKXKlineMarketDriver
+    from .live_runtime import LiveRuntime, LiveRuntimeConfig
+    from .live_runtime_store import LiveRuntimeStore
+
+    config = _load_report_payload(args.config)
+    watchlist = tuple(str(symbol).upper() for symbol in config.get('watchlist', []))
+    strategy_params = dict(config.get('strategy_params', {})) if isinstance(config.get('strategy_params'), dict) else {}
+
+    live_config = LiveExecutionConfig(
+        dry_run=False,
+        allowed_symbols=watchlist,
+        max_orders_per_cycle=int(config.get('max_orders_per_cycle', 1) or 1),
+        max_notional_per_cycle=float(config.get('max_notional_per_cycle', 0.0) or 0.0),
+        runtime_mode='derivatives',
+        exchange=str(config.get('exchange', 'okx')),
+        enable_binance=bool(config.get('enable_binance', False)),
+    )
+    service = LiveExecutionService(
+        _build_exchange_client(str(config.get('exchange', 'okx'))),
+        config=live_config,
+        runtime_adapter=_build_runtime_adapter(str(config.get('exchange', 'okx'))),
+        runtime_event_log_path=(str(config.get('runtime_events', '')) or None),
+    )
+    service.sync_symbol_rules(list(watchlist))
+    allocator = MarginAllocator(
+        total_margin=float(config.get('total_margin', 0.0) or 0.0),
+        max_symbol_weight=float(config.get('max_symbol_weight', 0.5) or 0.5),
+        max_leverage=float(config.get('max_leverage', 1.0) or 1.0),
+    )
+    service.set_symbol_budgets(allocator.allocate(watchlist=watchlist, target_scores={symbol: 1.0 for symbol in watchlist}))
+
+    transport = OKXPrivateStreamTransport() if str(config.get('exchange', 'okx')).lower() == 'okx' else None
+    runtime = LiveRuntime(
+        config=LiveRuntimeConfig(
+            watchlist=watchlist,
+            strategy_name=str(config.get('strategy', '')),
+            strategy_params=strategy_params,
+            total_margin=float(config.get('total_margin', 0.0) or 0.0),
+            max_symbol_weight=float(config.get('max_symbol_weight', 0.5) or 0.5),
+        ),
+        market_driver=OKXKlineMarketDriver(client=service.client, watchlist=watchlist, timeframe='5m'),
+        private_stream_transport=transport,
+        service=service,
+        store=LiveRuntimeStore(Path(str(config.get('status_path', 'status.json')))),
+    )
+    runtime.bootstrap_once()
+    runtime.run_forever()
+    return runtime.status()
+
 def build_parser():
     p = argparse.ArgumentParser(prog="quantx")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -808,6 +978,9 @@ def build_parser():
     ast.add_argument("--max-leverage", type=float, default=1.0)
     _attach_strategy_repo_args(ast)
     ast.add_argument("--json", action="store_true")
+    atr = sub.add_parser("autotrade-run")
+    atr.add_argument("--config", required=True)
+    atr.add_argument("--json", action="store_true")
     return p
 
 
@@ -992,12 +1165,17 @@ def main(argv=None):
         return
 
     if args.cmd == "autotrade-start":
-        payload = _build_autotrade_payload(args, enforce_ready=True)
+        payload = _build_autotrade_start_payload(args)
         _print(payload, args.json)
         return payload
 
     if args.cmd == "autotrade-status":
-        payload = _build_autotrade_payload(args, enforce_ready=False)
+        payload = _build_autotrade_status_payload(args)
+        _print(payload, args.json)
+        return payload
+
+    if args.cmd == "autotrade-run":
+        payload = _run_autotrade_runtime(args)
         _print(payload, args.json)
         return payload
 

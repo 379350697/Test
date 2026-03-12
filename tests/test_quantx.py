@@ -887,3 +887,53 @@ def test_deploy_payload_surfaces_runtime_health_summary_for_unattended_live():
     assert 'runtime_truth' in payload['runtime']
     assert 'execution_mode' in payload['runtime']['runtime_truth']
     assert 'stream' in payload['runtime']['runtime_truth']
+
+
+def test_autotrade_start_spawns_runtime_process_and_status_reads_runtime_store(monkeypatch):
+    import quantx.cli as cli
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    tmp_path = _workspace_tmp_dir('autotrade-runtime-process')
+    backtest_report = _write_live_deploy_backtest_report(tmp_path)
+    paper_events = _write_live_deploy_paper_events(tmp_path)
+    runtime_events = _write_live_deploy_runtime_events(tmp_path)
+
+    class _FakeProcess:
+        pid = 4242
+
+    monkeypatch.setattr(cli, '_build_exchange_client', lambda exchange, **kwargs: _DeployExchange(), raising=False)
+    monkeypatch.setattr(cli, '_build_runtime_adapter', lambda exchange: OKXPerpAdapter(), raising=False)
+    monkeypatch.setattr(cli, '_spawn_autotrade_runtime', lambda *args, **kwargs: _FakeProcess(), raising=False)
+
+    start = cli.main([
+        'autotrade-start',
+        '--exchange', 'okx',
+        '--strategy', 'cta_strategy',
+        '--watchlist', '["BTC-USDT-SWAP","ETH-USDT-SWAP"]',
+        '--total-margin', '1000',
+        '--backtest-report', backtest_report,
+        '--paper-events', paper_events,
+        '--paper-duration-minutes', '1440',
+        '--runtime-events', runtime_events,
+        '--oms', str(tmp_path / 'oms' / 'events.jsonl'),
+        '--alert-webhook', 'https://example.com/hook',
+        '--json',
+    ])
+    status = cli.main([
+        'autotrade-status',
+        '--exchange', 'okx',
+        '--strategy', 'cta_strategy',
+        '--watchlist', '["BTC-USDT-SWAP","ETH-USDT-SWAP"]',
+        '--total-margin', '1000',
+        '--backtest-report', backtest_report,
+        '--paper-events', paper_events,
+        '--paper-duration-minutes', '1440',
+        '--runtime-events', runtime_events,
+        '--oms', str(tmp_path / 'oms' / 'events.jsonl'),
+        '--alert-webhook', 'https://example.com/hook',
+        '--json',
+    ])
+
+    assert start['process']['pid'] == 4242
+    assert status['supervisor']['state'] in {'warming', 'live_active', 'reduce_only'}
+    assert status['runtime']['execution_path'] == 'runtime_core'

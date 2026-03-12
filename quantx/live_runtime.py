@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 from .live_margin_allocator import MarginAllocator
@@ -101,8 +102,7 @@ class LiveRuntime:
         while stop_event is None or not bool(stop_event.is_set()):
             self.run_market_iteration()
             self.run_health_iteration()
-            if stop_event is None:
-                break
+            time.sleep(1)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -129,7 +129,9 @@ class LiveRuntime:
     def _persist_status(self) -> None:
         if self.store is None:
             return
-        self.store.write_status(self.status())
+        payload = self.store.read_status()
+        payload.update(self.status())
+        self.store.write_status(payload)
 
     def _restore_persisted_state(self) -> None:
         if self.store is None:
@@ -159,3 +161,5 @@ class LiveRuntime:
             'reduce_only': bool(intent.reduce_only),
             'metadata': dict(intent.metadata),
         }
+
+

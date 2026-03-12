@@ -1,4 +1,4 @@
-﻿# Restart Takeover Runbook (Live Positions Present)
+# Restart Takeover Runbook (Live Positions Present)
 
 ## Goal
 Recover local OMS state, reconcile against exchange truth, and fail closed unless bootstrap policy allows safe resumption.
@@ -13,7 +13,7 @@ Recover local OMS state, reconcile against exchange truth, and fail closed unles
    - `resume_mode`
    - `promotion_policy`
 4. Keep live capital disabled until readiness checks are green.
-5. Use `autotrade-status` to inspect the current unattended supervisor state before restarting `autotrade-start`.
+5. Use `autotrade-status` to inspect the persisted unattended supervisor state before restarting `autotrade-start`, and keep the latest `process.pid` from the last start response for operator correlation.
 
 ## Bootstrap Policy Mapping
 Use bootstrap output to feed the live promotion contract:
@@ -25,7 +25,7 @@ Use bootstrap output to feed the live promotion contract:
 ## Resume Rules
 - `resume_mode=blocked`: do not place live orders; investigate cold recovery or missing runtime truth. Expect `autotrade-status` to stay in `readiness_blocked` or `blocked`.
 - `resume_mode=read_only`: reconcile positions/orders first; do not add new risk. Keep `autotrade-start` disabled until the state clears.
-- `resume_mode=reduce_only`: close or reduce risk only until the rest of the contract is green. `autotrade-status` should show `supervisor.state=reduce_only`.
+- `resume_mode=reduce_only`: close or reduce risk only until the rest of the contract is green. `autotrade-status` reads the persisted runtime store and should show `supervisor.state=reduce_only`.
 - `resume_mode=live`: bootstrap takeover allows progression to the full readiness review and then `autotrade-start`.
 
 ## Final Gate Before Orders
@@ -48,3 +48,4 @@ quantx deploy --mode live --exchange okx --symbol BTC-USDT-SWAP --backtest-repor
 quantx autotrade-status --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
 quantx autotrade-start --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
 ```
+
