@@ -296,6 +296,33 @@ def test_readiness_evaluator_flags_missing_gates(tmp_path):
     assert not names["alert_channel_registered"]["ok"]
 
 
+
+def test_readiness_blocks_normal_live_when_runtime_truth_is_degraded_or_unrecoverable(tmp_path):
+    router = AlertRouter()
+    router.register_webhook("ops", "https://example.com/hook")
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=("BTC-USDT-SWAP",),
+            max_orders_per_cycle=5,
+            max_notional_per_cycle=50000.0,
+            runtime_mode='derivatives',
+            exchange='okx',
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
+        alert_router=router,
+        oms_store=JsonlOMSStore(str(tmp_path / "oms" / "events.jsonl")),
+        runtime_status={'replay_persistence': False, 'degraded': True, 'reconcile_ok': False},
+    )
+
+    report = evaluate_readiness(ctx)
+    checks = {check['name']: check for check in report.checks}
+
+    assert checks['live_truth_replay_persistence']['ok'] is False
+    assert checks['live_truth_not_degraded']['ok'] is False
+    assert checks['live_truth_reconcile_ok']['ok'] is False
+
+
 def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
     router = AlertRouter()
     router.register_webhook("ops", "https://example.com/hook")
@@ -312,6 +339,7 @@ def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
         alert_router=router,
         oms_store=store,
+        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
     )
 
     rep = evaluate_readiness(ctx)
@@ -349,6 +377,7 @@ def test_readiness_assert_ready_and_blockers(tmp_path):
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
         alert_router=router,
         oms_store=JsonlOMSStore(str(tmp_path / "oms" / "events.jsonl")),
+        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
     )
     final = assert_ready(ok_ctx)
     assert final.ok
@@ -522,6 +551,7 @@ def test_deploy_readiness_prefers_okx_before_binance():
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
         alert_router=router,
         oms_store=store,
+        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
     )
     okx_report = evaluate_readiness(okx_ctx)
     okx_checks = {check['name']: check for check in okx_report.checks}
@@ -541,6 +571,7 @@ def test_deploy_readiness_prefers_okx_before_binance():
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
         alert_router=router,
         oms_store=store,
+        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
     )
     binance_report = evaluate_readiness(binance_ctx)
     binance_checks = {check['name']: check for check in binance_report.checks}
@@ -595,4 +626,5 @@ def test_live_execution_service_ingests_private_stream_events_into_runtime_truth
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 0.01
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
     assert snapshot['observed_exchange']
+
 

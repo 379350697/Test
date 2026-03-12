@@ -25,10 +25,12 @@ class ReadinessContext:
     risk_limits: RiskLimits
     alert_router: AlertRouter
     oms_store: JsonlOMSStore | None = None
+    runtime_status: dict[str, Any] | None = None
 
 
 def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
     checks: list[dict[str, Any]] = []
+    runtime_status = ctx.runtime_status or {}
 
     _append_check(
         checks,
@@ -98,9 +100,33 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
     )
     _append_check(
         checks,
+        'live_truth_replay_persistence',
+        bool(runtime_status.get('replay_persistence')),
+        'runtime truth replay persistence must be available before live rollout',
+    )
+    _append_check(
+        checks,
+        'live_truth_not_degraded',
+        not bool(runtime_status.get('degraded')),
+        'runtime truth must not be in degraded recovery mode',
+    )
+    _append_check(
+        checks,
+        'live_truth_reconcile_ok',
+        bool(runtime_status.get('reconcile_ok')),
+        'runtime truth reconciliation must be healthy before live rollout',
+    )
+    _append_check(
+        checks,
         'micro_live_ready',
-        (not ctx.live_config.dry_run) and _paper_closure_ready(ctx) and len(ctx.alert_router.channels) > 0 and ctx.oms_store is not None,
-        'micro-live requires paper closure, alerts, and OMS persistence',
+        (not ctx.live_config.dry_run)
+        and _paper_closure_ready(ctx)
+        and len(ctx.alert_router.channels) > 0
+        and ctx.oms_store is not None
+        and bool(runtime_status.get('replay_persistence'))
+        and (not bool(runtime_status.get('degraded')))
+        and bool(runtime_status.get('reconcile_ok')),
+        'micro-live requires paper closure, alerts, OMS persistence, and healthy runtime truth state',
     )
 
     has_oms_store = ctx.oms_store is not None
