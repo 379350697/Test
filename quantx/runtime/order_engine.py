@@ -43,6 +43,12 @@ class OrderEngine:
             order_type=intent.order_type,
             time_in_force=intent.time_in_force,
             reduce_only=intent.reduce_only,
+            intent_id=intent.intent_id,
+            strategy_id=intent.strategy_id,
+            signal_id=intent.signal_id,
+            reason=intent.reason,
+            created_ts=intent.created_ts,
+            tags=intent.tags,
         )
         self.orders[client_order_id] = order
         self._seen_trades[client_order_id] = set()

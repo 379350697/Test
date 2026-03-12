@@ -4,6 +4,7 @@ from .ledger_engine import LedgerEngine
 from .models import AccountLedger, OrderIntent, PositionLeg, TrackedOrder
 from .order_engine import OrderEngine, OrderStateError
 from .runtime_risk import RuntimeRiskLimits, RuntimeRiskValidator
+from .session import RuntimeSession
 from .strategy_runtime import (
     BaseBarStrategy,
     BaseEventStrategy,
@@ -31,6 +32,7 @@ __all__ = [
     'PositionLeg',
     'RuntimeRiskLimits',
     'RuntimeRiskValidator',
+    'RuntimeSession',
     'StrategyContext',
     'StrategyRuntime',
     'TrackedOrder',
