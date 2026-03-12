@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 import pytest
 
@@ -408,7 +408,8 @@ def test_backtest_reports_runtime_trace_for_downstream_consumers():
     res = run_backtest(candles, 'dca', {'buy_interval': 12, 'buy_amount_usdt': 20}, cfg)
 
     assert 'runtime' in res.extra
-    assert res.extra['runtime']['mode'] == 'backtest'
+    assert res.extra['runtime']['mode'] == 'bar_backtest'
+    assert res.extra['runtime']['fidelity'] == 'low'
     assert 'ledger' in res.extra['runtime']
 
 

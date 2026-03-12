@@ -48,106 +48,75 @@ def _stability_score(metrics: dict[str, float], n_trades: int) -> tuple[dict[str
     return breakdown, total
 
 
-class _BacktestRuntimeTrace:
-    def __init__(self, symbol: str, initial_cash: float):
-        self.symbol = symbol
-        self.order_engine = OrderEngine()
-        self.ledger_engine = LedgerEngine(wallet_balance=initial_cash)
-        self._order_ids: list[str] = []
-        self._order_state_sequences: dict[str, list[str]] = {}
-        self._sequence = 0
+def _runtime_ts(value) -> str:
+    return value.isoformat() if hasattr(value, 'isoformat') else str(value)
 
-    def _record_state(self, client_order_id: str, status: str) -> None:
-        sequence = self._order_state_sequences.setdefault(client_order_id, [])
-        if not sequence or sequence[-1] != status:
-            sequence.append(status)
 
-    def record_trade(self, trade: Trade, position_side: str) -> None:
-        side = trade.side.lower()
-        reduce_only = (position_side == "long" and side == "sell") or (position_side == "short" and side == "buy")
-        self._sequence += 1
-        client_order_id = f"bt-{self._sequence}"
-        intent = OrderIntent(
+def _record_bar_backtest_trade(
+    session: RuntimeSession,
+    trade: Trade,
+    position_side: str,
+    *,
+    strategy_id: str | None = None,
+) -> None:
+    side = trade.side.lower()
+    reduce_only = (position_side == 'long' and side == 'sell') or (position_side == 'short' and side == 'buy')
+    ts = _runtime_ts(trade.ts)
+    intent = OrderIntent(
+        symbol=trade.symbol,
+        side=side,
+        position_side=position_side,
+        qty=trade.qty,
+        price=trade.price,
+        order_type='market',
+        time_in_force='ioc',
+        reduce_only=reduce_only,
+        strategy_id=strategy_id,
+        reason=trade.reason,
+        created_ts=ts,
+        tags=('bar_backtest',),
+    )
+    submission = session.submit_intents([intent], exchange='bar_backtest', ts=ts)
+    if not submission or submission[-1].status == 'rejected':
+        return
+
+    client_order_id = submission[-1].client_order_id
+    lifecycle = [
+        OrderEvent(
             symbol=trade.symbol,
-            side=side,
-            position_side=position_side,
-            qty=trade.qty,
-            price=trade.price,
-            order_type="market",
-            time_in_force="ioc",
-            reduce_only=reduce_only,
-        )
-        order = self.order_engine.create_intent(client_order_id, intent)
-        self._record_state(client_order_id, order.status)
-        ts = trade.ts.isoformat() if hasattr(trade.ts, "isoformat") else str(trade.ts)
-        for status in ("risk_accepted", "submitted", "acked", "working"):
-            order = self.order_engine.apply_order_event(
-                OrderEvent(
-                    symbol=trade.symbol,
-                    exchange="backtest",
-                    ts=ts,
-                    client_order_id=client_order_id,
-                    exchange_order_id=client_order_id,
-                    status=status,
-                    payload={"reason": trade.reason},
-                )
-            )
-            self._record_state(client_order_id, order.status)
-
-        fill = FillEvent(
-            symbol=trade.symbol,
-            exchange="backtest",
+            exchange='bar_backtest',
             ts=ts,
             client_order_id=client_order_id,
             exchange_order_id=client_order_id,
-            trade_id=f"bt-fill-{self._sequence}",
+            status='acked',
+            payload={'reason': trade.reason},
+        ),
+        OrderEvent(
+            symbol=trade.symbol,
+            exchange='bar_backtest',
+            ts=ts,
+            client_order_id=client_order_id,
+            exchange_order_id=client_order_id,
+            status='working',
+            payload={'reason': trade.reason},
+        ),
+        FillEvent(
+            symbol=trade.symbol,
+            exchange='bar_backtest',
+            ts=ts,
+            client_order_id=client_order_id,
+            exchange_order_id=client_order_id,
+            trade_id=f'{client_order_id}-fill-1',
             side=side,
             position_side=position_side,
             qty=trade.qty,
             price=trade.price,
             fee=trade.fee,
-            payload={"reason": trade.reason},
-        )
-        order = self.order_engine.apply_fill_event(fill)
-        self._record_state(client_order_id, order.status)
-        self.ledger_engine.apply_fill(fill)
-        self._order_ids.append(client_order_id)
+            payload={'reason': trade.reason},
+        ),
+    ]
+    session.apply_events(lifecycle)
 
-    def snapshot(self, cash: float, net_qty: float, avg_price: float, mark_price: float) -> dict:
-        equity = cash + net_qty * mark_price
-        long_qty = max(net_qty, 0.0)
-        short_qty = max(-net_qty, 0.0)
-        orders = []
-        for order_id in self._order_ids:
-            order = self.order_engine.get_order(order_id)
-            orders.append(
-                {
-                    "client_order_id": order.client_order_id,
-                    "status": order.status,
-                    "filled_qty": order.filled_qty,
-                    "side": order.side,
-                    "position_side": order.position_side,
-                }
-            )
-        return {
-            "mode": "backtest",
-            "orders": orders,
-            "order_state_sequences": {
-                order_id: list(self._order_state_sequences.get(order_id, [])) for order_id in self._order_ids
-            },
-            "ledger": {
-                "wallet_balance": cash,
-                "equity": equity,
-                "available_margin": equity,
-                "used_margin": 0.0,
-                "maintenance_margin": 0.0,
-                "risk_ratio": 0.0,
-            },
-            "positions": {
-                "long": {"qty": long_qty, "avg_entry_price": avg_price if long_qty > 0 else 0.0},
-                "short": {"qty": short_qty, "avg_entry_price": avg_price if short_qty > 0 else 0.0},
-            },
-        }
 
 def _event_ts_as_datetime(ts: str) -> datetime:
     try:
@@ -301,6 +270,7 @@ def run_event_backtest(
 
     runtime_snapshot = session.snapshot()
     runtime_snapshot['fidelity'] = 'high'
+
     return BacktestResult(
         config,
         metadata,
@@ -341,13 +311,23 @@ def run_backtest(
     entry_idx: int | None = None
     peak_price_since_entry: float = 0.0
     trough_price_since_entry: float = 0.0
-    runtime_trace = _BacktestRuntimeTrace(config.symbol, config.initial_cash)
+    runtime_session = RuntimeSession(mode='bar_backtest', wallet_balance=config.initial_cash)
+    runtime_strategy_id = getattr(strategy, 'name', strategy_name)
 
     for i in range(len(candles) - 1):
         c = candles[i]
         nxt = candles[i + 1]
         signal = strategy.signal(candles, i)
         day_key = c.ts.date().isoformat()
+        runtime_session.apply_events([
+            MarketEvent(
+                symbol=config.symbol,
+                exchange='bar_backtest',
+                channel='bar_close',
+                ts=_runtime_ts(c.ts),
+                payload={'price': c.close},
+            )
+        ])
 
         # shared ATR (used by exits and position sizing)
         atr_val = 0.0
@@ -382,7 +362,7 @@ def run_backtest(
                     cash += pos.qty * px - fee
                     trade = Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, "max_drawdown_stop")
                     trades.append(trade)
-                    runtime_trace.record_trade(trade, "long")
+                    _record_bar_backtest_trade(runtime_session, trade, 'long', strategy_id=runtime_strategy_id)
                 else:
                     qty_abs = abs(pos.qty)
                     px = nxt.open * (1 + config.slippage_pct)
@@ -392,7 +372,7 @@ def run_backtest(
                     cash -= qty_abs * px + fee
                     trade = Trade(nxt.ts, config.symbol, "BUY", qty_abs, px, fee, "max_drawdown_stop")
                     trades.append(trade)
-                    runtime_trace.record_trade(trade, "short")
+                    _record_bar_backtest_trade(runtime_session, trade, 'short', strategy_id=runtime_strategy_id)
                 pos.qty = 0
                 pos.avg_price = 0.0
                 entry_idx = None
@@ -440,7 +420,7 @@ def run_backtest(
                     cash += pos.qty * px - fee
                     trade = Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, reason)
                     trades.append(trade)
-                    runtime_trace.record_trade(trade, "long")
+                    _record_bar_backtest_trade(runtime_session, trade, 'long', strategy_id=runtime_strategy_id)
                 else:
                     qty_abs = abs(pos.qty)
                     px = nxt.open * (1 + config.slippage_pct)
@@ -450,7 +430,7 @@ def run_backtest(
                     cash -= qty_abs * px + fee
                     trade = Trade(nxt.ts, config.symbol, "BUY", qty_abs, px, fee, reason)
                     trades.append(trade)
-                    runtime_trace.record_trade(trade, "short")
+                    _record_bar_backtest_trade(runtime_session, trade, 'short', strategy_id=runtime_strategy_id)
                 pos.qty = 0
                 pos.avg_price = 0.0
                 entry_idx = None
@@ -522,7 +502,7 @@ def run_backtest(
                 cash -= qty_abs * px + fee
                 trade = Trade(nxt.ts, config.symbol, "BUY", qty_abs, px, fee, f"signal:{signal}")
                 trades.append(trade)
-                runtime_trace.record_trade(trade, "short")
+                _record_bar_backtest_trade(runtime_session, trade, 'short', strategy_id=runtime_strategy_id)
                 pos.qty = 0
                 pos.avg_price = 0.0
                 entry_idx = None
@@ -539,7 +519,7 @@ def run_backtest(
                 cash += pos.qty * px - fee
                 trade = Trade(nxt.ts, config.symbol, "SELL", pos.qty, px, fee, f"signal:{signal}")
                 trades.append(trade)
-                runtime_trace.record_trade(trade, "long")
+                _record_bar_backtest_trade(runtime_session, trade, 'long', strategy_id=runtime_strategy_id)
                 pos.qty = 0
                 pos.avg_price = 0.0
                 entry_idx = None
@@ -616,7 +596,7 @@ def run_backtest(
                     pos.avg_price = px
                     trade = Trade(nxt.ts, config.symbol, "BUY", qty, px, fee, f"signal:{signal}")
                     trades.append(trade)
-                    runtime_trace.record_trade(trade, "long")
+                    _record_bar_backtest_trade(runtime_session, trade, 'long', strategy_id=runtime_strategy_id)
                     peak_price_since_entry = c.high
                     trough_price_since_entry = c.low
                 else:
@@ -628,7 +608,7 @@ def run_backtest(
                     pos.avg_price = px
                     trade = Trade(nxt.ts, config.symbol, "SELL", qty, px, fee, f"signal:{signal}")
                     trades.append(trade)
-                    runtime_trace.record_trade(trade, "short")
+                    _record_bar_backtest_trade(runtime_session, trade, 'short', strategy_id=runtime_strategy_id)
                     peak_price_since_entry = c.high
                     trough_price_since_entry = c.low
 
@@ -638,6 +618,15 @@ def run_backtest(
                 orders_per_day[day_key] += 1
 
     if candles:
+        runtime_session.apply_events([
+            MarketEvent(
+                symbol=config.symbol,
+                exchange='bar_backtest',
+                channel='bar_close',
+                ts=_runtime_ts(candles[-1].ts),
+                payload={'price': candles[-1].close},
+            )
+        ])
         end_equity = cash + pos.qty * candles[-1].close
         equity_curve.append((candles[-1].ts, end_equity))
     eq_values = [v for _, v in equity_curve] or [config.initial_cash]
@@ -674,6 +663,8 @@ def run_backtest(
         python_version=python_fingerprint(),
         created_at=now_utc_iso(),
     )
+    runtime_snapshot = runtime_session.snapshot()
+    runtime_snapshot['fidelity'] = 'low'
     return BacktestResult(
         config,
         metadata,
@@ -685,12 +676,7 @@ def run_backtest(
         total,
         extra={
             "strategy_profile": strategy_profile,
-            "runtime": runtime_trace.snapshot(
-                cash,
-                pos.qty,
-                pos.avg_price,
-                candles[-1].close if candles else 0.0,
-            ),
+            "runtime": runtime_snapshot,
         },
     )
 

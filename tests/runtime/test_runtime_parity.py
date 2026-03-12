@@ -30,7 +30,7 @@ register_strategy_class(FixedFlipStrategy)
 
 
 
-def test_backtest_runtime_trace_records_order_flow_and_ledger_state():
+def test_bar_backtest_uses_runtime_session_and_reports_low_fidelity():
     candles = [
         Candle(
             ts=datetime(2024, 1, 1) + timedelta(hours=i),
@@ -47,11 +47,12 @@ def test_backtest_runtime_trace_records_order_flow_and_ledger_state():
     res = run_backtest(candles, 'fixed_flip', {}, cfg)
     runtime = res.extra['runtime']
 
-    assert runtime['mode'] == 'backtest'
+    assert runtime['mode'] == 'bar_backtest'
+    assert runtime['fidelity'] == 'low'
     assert len(runtime['orders']) == len(res.trades)
     assert [order['status'] for order in runtime['orders']] == ['filled', 'filled']
     assert runtime['ledger']['equity'] == pytest.approx(res.equity_curve[-1][1])
-    assert runtime['positions']['long']['qty'] == pytest.approx(0.0)
+    assert runtime['positions']['SOLUSDT']['long']['qty'] == pytest.approx(0.0)
 
 
 from quantx.execution import PaperLiveExecutor
@@ -101,5 +102,5 @@ def test_runtime_parity_backtest_and_paper_share_order_state_sequences_and_flat_
     assert all(sequence == expected_sequence for sequence in paper_sequences)
     assert backtest.extra['runtime']['ledger']['used_margin'] == pytest.approx(0.0)
     assert ex.state.runtime['ledger']['used_margin'] == pytest.approx(0.0)
-    assert backtest.extra['runtime']['positions']['long']['qty'] == pytest.approx(0.0)
+    assert backtest.extra['runtime']['positions']['SOLUSDT']['long']['qty'] == pytest.approx(0.0)
     assert ex.state.runtime['positions']['SOLUSDT']['long']['qty'] == pytest.approx(0.0)
