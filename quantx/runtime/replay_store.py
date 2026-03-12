@@ -4,7 +4,7 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 class RuntimeReplayStore:
@@ -16,6 +16,10 @@ class RuntimeReplayStore:
         payload = self._serialize_event(event)
         with self.path.open('a', encoding='utf-8') as fh:
             fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
+
+    def append_all(self, events: Iterable[Any]) -> None:
+        for event in events:
+            self.append(event)
 
     def load(self) -> tuple[list[dict[str, Any]], int]:
         if not self.path.exists():
@@ -65,3 +69,4 @@ class RuntimeReplayStore:
         if isinstance(value, tuple):
             return [self._serialize_value(v) for v in value]
         return value
+
