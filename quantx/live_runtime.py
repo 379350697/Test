@@ -113,7 +113,7 @@ class LiveRuntime:
             time.sleep(1)
 
     def status(self) -> dict[str, Any]:
-        return {
+        payload = {
             'process': {
                 'started_at': self._started_at,
             },
@@ -132,6 +132,9 @@ class LiveRuntime:
             'watchlist': list(self.config.watchlist),
             'last_closed_bar_ts': self._last_closed_bar_ts(),
         }
+        if hasattr(self.service, 'circuit_breaker_snapshot'):
+            payload['pilot_risk'] = self.service.circuit_breaker_snapshot()
+        return payload
 
     def _apply_symbol_budgets(self) -> None:
         if not hasattr(self.service, 'set_symbol_budgets'):

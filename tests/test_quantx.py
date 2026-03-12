@@ -979,3 +979,28 @@ def test_autotrade_healthcheck_reports_blocked_for_stale_status_and_emits_alert(
     assert payload['status'] == 'blocked'
     assert payload['reason'] == 'process_dead'
     assert sent[0]['delivery'] == 'sent'
+
+def test_autotrade_status_includes_pilot_circuit_snapshot(tmp_path):
+    import quantx.cli as cli
+    from quantx.live_runtime_store import LiveRuntimeStore
+
+    status_path = tmp_path / 'autotrade' / 'status.json'
+    LiveRuntimeStore(status_path).write_status({
+        'process': {'pid': 4242},
+        'runtime': {'execution_mode': 'blocked'},
+        'supervisor': {'state': 'blocked'},
+        'pilot_risk': {'reason': 'daily_loss_exceeded', 'ok': False},
+    })
+
+    payload = cli.main([
+        'autotrade-status',
+        '--exchange', 'okx',
+        '--strategy', 'cta_strategy',
+        '--watchlist', '["BTC-USDT-SWAP","ETH-USDT-SWAP","XRP-USDT-SWAP"]',
+        '--total-margin', '1000',
+        '--status-path', str(status_path),
+        '--json',
+    ])
+
+    assert payload['pilot_risk']['ok'] is False
+    assert payload['pilot_risk']['reason'] == 'daily_loss_exceeded'

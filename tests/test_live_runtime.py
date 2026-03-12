@@ -88,3 +88,23 @@ def test_live_runtime_persists_heartbeat_fields_and_degrade_reason(tmp_path):
     assert payload['runtime']['last_market_iteration_at']
     assert payload['runtime']['last_health_iteration_at']
     assert payload['supervisor']['last_degrade_reason'] == 'stream_gap'
+
+def test_live_runtime_persists_pilot_circuit_snapshot(tmp_path):
+    class _LiveServiceWithCircuit(_LiveServiceStub):
+        def circuit_breaker_snapshot(self) -> dict[str, object]:
+            return {'ok': False, 'reason': 'daily_loss_exceeded'}
+
+    store = LiveRuntimeStore(tmp_path / 'status.json')
+    runtime = LiveRuntime(
+        config=LiveRuntimeConfig(watchlist=('BTC-USDT-SWAP',), strategy_name='cta_strategy', total_margin=1000.0),
+        market_driver=_MarketDriverStub(),
+        private_stream_transport=_PrivateStreamStub(),
+        service=_LiveServiceWithCircuit(),
+        store=store,
+    )
+
+    runtime.bootstrap_once()
+
+    payload = store.read_status()
+    assert payload['pilot_risk']['ok'] is False
+    assert payload['pilot_risk']['reason'] == 'daily_loss_exceeded'

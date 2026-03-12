@@ -575,6 +575,15 @@ def _build_autotrade_payload(args, *, enforce_ready: bool) -> dict[str, object]:
     }
 
 def _autotrade_runtime_paths(args) -> dict[str, Path]:
+    raw_status_path = str(getattr(args, 'status_path', '') or '').strip()
+    if raw_status_path:
+        status_path = Path(raw_status_path)
+        state_dir = status_path.resolve().parent
+        return {
+            'state_dir': state_dir,
+            'config_path': state_dir / 'runtime_config.json',
+            'status_path': status_path,
+        }
     state_dir = Path(args.oms).resolve().parent / 'autotrade'
     return {
         'state_dir': state_dir,
@@ -659,7 +668,20 @@ def _build_autotrade_start_payload(args) -> dict[str, object]:
 def _build_autotrade_status_payload(args) -> dict[str, object]:
     from .live_runtime_store import LiveRuntimeStore
 
-    payload = _build_autotrade_payload(args, enforce_ready=False)
+    try:
+        payload = _build_autotrade_payload(args, enforce_ready=False)
+    except ValueError:
+        if not str(getattr(args, 'status_path', '') or '').strip():
+            raise
+        payload = {
+            'supervisor': {'state': 'blocked', 'execution_mode': 'blocked'},
+            'runtime': {'execution_path': 'runtime_core', 'runtime_truth': {}},
+            'strategy': {
+                'name': str(getattr(args, 'strategy', '') or ''),
+                'watchlist': list(_parse_watchlist(getattr(args, 'watchlist', '[]'))),
+            },
+            'allocation': {'total_margin': float(getattr(args, 'total_margin', 0.0) or 0.0)},
+        }
     paths = _autotrade_runtime_paths(args)
     stored = LiveRuntimeStore(paths['status_path']).read_status()
 
@@ -690,8 +712,9 @@ def _build_autotrade_status_payload(args) -> dict[str, object]:
 
     if isinstance(stored.get('process'), dict):
         payload['process'] = dict(stored['process'])
+    if isinstance(stored.get('pilot_risk'), dict):
+        payload['pilot_risk'] = dict(stored['pilot_risk'])
     return payload
-
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -1051,6 +1074,7 @@ def build_parser():
     ast.add_argument("--oms", default="")
     ast.add_argument("--alert-webhook", action="append", default=[])
     ast.add_argument("--initial-cash", type=float, default=0.0)
+    ast.add_argument("--status-path", default="")
     ast.add_argument("--max-orders-per-cycle", type=int, default=1)
     ast.add_argument("--max-notional-per-cycle", type=float, default=0.0)
     ast.add_argument("--max-symbol-weight", type=float, default=0.5)
