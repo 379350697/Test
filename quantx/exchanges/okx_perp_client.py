@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -82,6 +82,30 @@ class OKXPerpClient(OKXClient):
         data = self._signed_request("GET", "/api/v5/account/balance", {})
         rows = data.get("data", []) if isinstance(data, dict) else []
         return rows[0] if rows else {}
+
+    def get_candles(self, symbol: str, *, bar: str = "5m", limit: int = 200) -> list[dict[str, Any]]:
+        data = self._public_request(
+            "GET",
+            "/api/v5/market/candles",
+            {"instId": symbol.upper(), "bar": bar, "limit": str(limit)},
+        )
+        rows = data.get("data", []) if isinstance(data, dict) else []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 6:
+                continue
+            out.append(
+                {
+                    "ts": str(row[0]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5]),
+                    "confirmed": len(row) > 8 and str(row[8]) == "1",
+                }
+            )
+        return out
 
     def validate_account_mode(self) -> dict[str, str]:
         data = self._signed_request("GET", "/api/v5/account/config", {})
