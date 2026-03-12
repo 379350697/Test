@@ -916,3 +916,19 @@ def test_live_execution_service_rejects_opening_orders_when_execution_mode_is_re
 
     assert result['ok'] is False
     assert result['rejected'][0]['reason'] == 'runtime_truth_reduce_only'
+
+def test_live_execution_service_blocks_new_orders_after_daily_loss_circuit_trip():
+    breaker = RiskCircuitBreaker(CircuitBreakerLimits(max_daily_loss=50.0, max_orders_per_day=10))
+    breaker.register_fill(-60.0)
+    service = LiveExecutionService(
+        DummyExchange(),
+        config=LiveExecutionConfig(dry_run=True),
+        circuit_breaker=breaker,
+    )
+
+    result = service.execute_orders([
+        {'symbol': 'BTC-USDT-SWAP', 'side': 'BUY', 'qty': 1.0, 'price': 100.0, 'reduce_only': False},
+    ])
+
+    assert result['ok'] is False
+    assert result['rejected'][0]['reason'] == 'pilot_circuit_daily_loss_exceeded'

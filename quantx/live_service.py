@@ -16,7 +16,7 @@ from .runtime.private_stream import PrivateStreamSupervisor
 from .runtime.session import RuntimeSession
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
-from .risk_engine import RiskLimits, check_symbol_budget, pretrade_check
+from .risk_engine import RiskCircuitBreaker, RiskLimits, check_symbol_budget, pretrade_check
 from .system_log import EventLogger, LogCategory, LogEvent, LogLevel
 
 
@@ -47,6 +47,7 @@ class LiveExecutionService:
         config: LiveExecutionConfig | None = None,
         event_logger: EventLogger | None = None,
         runtime_adapter: Any | None = None,
+        circuit_breaker: RiskCircuitBreaker | None = None,
         runtime_event_log_path: str | None = None,
         private_stream_transport: Any | None = None,
     ):
@@ -57,6 +58,7 @@ class LiveExecutionService:
         self.symbol_rules: dict[str, SymbolRule] = {}
         self.symbol_budgets: dict[str, Any] = {}
         self.event_logger = event_logger
+        self.circuit_breaker = circuit_breaker
         self.runtime_adapter = runtime_adapter
         self.private_stream_transport = private_stream_transport
         self.private_stream_supervisor = PrivateStreamSupervisor()
@@ -156,6 +158,17 @@ class LiveExecutionService:
                 "runtime_snapshot": self.runtime_snapshot(),
                 "ok": False,
             }
+        opening_orders = [od for od in orders if not bool(od.get("reduce_only", False))]
+        if self.circuit_breaker is not None and opening_orders:
+            breaker_ok, breaker_reason = self.circuit_breaker.check()
+            if not breaker_ok:
+                return {
+                    "accepted": [],
+                    "rejected": [{"reason": f"pilot_circuit_{breaker_reason}"}],
+                    "runtime_events": [],
+                    "runtime_snapshot": self.runtime_snapshot(),
+                    "ok": False,
+                }
         total_notional = sum(abs(float(od.get("qty", 0.0)) * float(od.get("price", 0.0))) for od in orders)
         if self.config.max_orders_per_cycle is not None and len(orders) > self.config.max_orders_per_cycle:
             reason = with_code(QX_EXEC_CYCLE_LIMIT, "max_orders_per_cycle_exceeded")
@@ -236,6 +249,8 @@ class LiveExecutionService:
                 dry_run_res = {"accepted": True, "dry_run": True, "clientOrderId": client_order_id}
                 accepted.append({"order": od, "result": dry_run_res})
                 self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": True, "exchange": type(self.client).__name__, "order": od})
+                if self.circuit_breaker is not None and not reduce_only:
+                    self.circuit_breaker.register_order()
                 continue
 
             try:
@@ -249,6 +264,8 @@ class LiveExecutionService:
                     self._apply_runtime_event(runtime_event)
                 self._consecutive_failures = 0
                 self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": False, "exchange": type(self.client).__name__, "result": res})
+                if self.circuit_breaker is not None and not reduce_only:
+                    self.circuit_breaker.register_order()
             except Exception as exc:  # noqa: BLE001
                 self._consecutive_failures += 1
                 reason = f"place_failed:{exc}"
@@ -367,6 +384,11 @@ class LiveExecutionService:
 
     def runtime_snapshot(self) -> dict[str, Any]:
         return self.runtime_coordinator.snapshot()
+
+    def circuit_breaker_snapshot(self) -> dict[str, Any]:
+        if self.circuit_breaker is None:
+            return {'ok': True, 'reason': 'not_configured'}
+        return self.circuit_breaker.snapshot()
 
     def runtime_status(self) -> dict[str, Any]:
         status = self.runtime_coordinator.status()

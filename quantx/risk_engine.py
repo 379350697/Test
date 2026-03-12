@@ -1,4 +1,4 @@
-﻿"""Pre-trade and portfolio risk checks (P1)."""
+"""Pre-trade and portfolio risk checks (P1)."""
 
 from __future__ import annotations
 
@@ -51,6 +51,21 @@ class RiskCircuitBreaker:
         if self.state.order_count > self.limits.max_orders_per_day:
             return False, "max_orders_per_day_exceeded"
         return True, "ok"
+
+    def snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        self._roll_day(now)
+        ok, reason = self.check(now)
+        return {
+            'ok': ok,
+            'reason': reason,
+            'day': self.state.day,
+            'realized_pnl': self.state.realized_pnl,
+            'order_count': self.state.order_count,
+            'limits': {
+                'max_daily_loss': self.limits.max_daily_loss,
+                'max_orders_per_day': self.limits.max_orders_per_day,
+            },
+        }
 
     def _roll_day(self, now: datetime | None = None) -> None:
         ts = now or datetime.now(tz=timezone.utc)
