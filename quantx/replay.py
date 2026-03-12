@@ -12,7 +12,7 @@ from .oms import JsonlOMSStore
 from .runtime.events import AccountEvent, FillEvent, MarketEvent
 from .runtime.models import OrderIntent
 from .runtime.paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
-from .runtime.ledger_engine import LedgerEngine
+from .runtime.session import RuntimeSession
 from .runtime.replay_store import RuntimeReplayStore
 
 
@@ -202,103 +202,40 @@ def _rerun_paper_summary(events: list[dict[str, Any]], live_summary: dict[str, A
 
 def _summarize_runtime_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     order_state_sequences: dict[str, list[str]] = {}
-    ledger_engine = LedgerEngine(wallet_balance=0.0)
-    last_symbol = ''
-    last_exchange = 'replay'
+    session = RuntimeSession(mode='live_replay', wallet_balance=0.0)
+    replay_store = RuntimeReplayStore('_replay_summary_unused.jsonl')
     live_fill_prices: list[float] = []
     funding_total = 0.0
 
     for ev in events:
         kind = str(ev.get('kind', ''))
+        replay_row = ev
         if kind == 'order_event':
             client_order_id = str(ev.get('client_order_id', 'unknown'))
             _append_runtime_replay_state(order_state_sequences, client_order_id, str(ev.get('status', 'unknown')))
-            last_exchange = str(ev.get('exchange', last_exchange) or last_exchange)
-            last_symbol = str(ev.get('symbol', last_symbol) or last_symbol)
-            continue
-
-        if kind == 'fill_event':
+        elif kind == 'fill_event':
             client_order_id = str(ev.get('client_order_id', 'unknown'))
             _append_runtime_replay_state(order_state_sequences, client_order_id, 'filled')
-            fill = FillEvent(
-                symbol=str(ev.get('symbol', '')).upper(),
-                exchange=str(ev.get('exchange', 'replay')),
-                ts=str(ev.get('ts', '')),
-                client_order_id=client_order_id,
-                exchange_order_id=str(ev.get('exchange_order_id', '')) or None,
-                trade_id=str(ev.get('trade_id', '')),
-                side=str(ev.get('side', '')).lower(),
-                position_side=str(ev.get('position_side', 'net')).lower(),
-                qty=float(ev.get('qty', 0.0) or 0.0),
-                price=float(ev.get('price', 0.0) or 0.0),
-                fee=float(ev.get('fee', 0.0) or 0.0),
-                payload=ev.get('payload', {}) if isinstance(ev.get('payload'), dict) else {},
-            )
-            ledger_engine.apply_fill(fill)
-            live_fill_prices.append(fill.price)
-            last_exchange = fill.exchange
-            last_symbol = fill.symbol
-            continue
-
-        if kind == 'market_event':
+            live_fill_prices.append(float(ev.get('price', 0.0) or 0.0))
+        elif kind == 'account_event' and str(ev.get('event_type', '')) == 'funding':
             payload = ev.get('payload', {}) if isinstance(ev.get('payload'), dict) else {}
-            price = payload.get('price')
-            if price is None:
-                continue
-            market = MarketEvent(
-                symbol=str(ev.get('symbol', '')).upper(),
-                exchange=str(ev.get('exchange', 'replay')),
-                channel=str(ev.get('channel', 'market')),
-                ts=str(ev.get('ts', '')),
-                payload={'price': float(price)},
-            )
-            ledger_engine.apply_market_event(market)
-            last_exchange = market.exchange
-            last_symbol = market.symbol
-            continue
+            funding_total += float(payload.get('amount', 0.0) or 0.0)
+            replay_row = dict(ev)
+            replay_row['payload'] = {
+                'symbol': str(payload.get('symbol') or ev.get('symbol') or '').upper(),
+                'position_side': str(payload.get('position_side', 'long')).lower(),
+                'amount': float(payload.get('amount', 0.0) or 0.0),
+            }
 
-        if kind == 'account_event' and str(ev.get('event_type', '')) == 'funding':
-            payload = ev.get('payload', {}) if isinstance(ev.get('payload'), dict) else {}
-            symbol = str(payload.get('symbol') or ev.get('symbol') or last_symbol).upper()
-            position_side = str(payload.get('position_side', 'long')).lower()
-            account = AccountEvent(
-                exchange=str(ev.get('exchange', last_exchange)),
-                ts=str(ev.get('ts', '')),
-                event_type='funding',
-                payload={
-                    'symbol': symbol,
-                    'position_side': position_side,
-                    'amount': float(payload.get('amount', 0.0) or 0.0),
-                },
-            )
-            ledger_engine.apply_account_event(account)
-            funding_total += float(account.payload['amount'])
-            last_exchange = account.exchange
-            last_symbol = symbol
+        replay_store._replay_row(session, replay_row)
 
-    positions: dict[str, dict[str, dict[str, float]]] = {}
-    for (symbol, position_side), leg in ledger_engine.ledger.positions.items():
-        positions.setdefault(symbol, {})[position_side] = {
-            'qty': leg.qty,
-            'avg_entry_price': leg.avg_entry_price,
-            'realized_pnl': leg.realized_pnl,
-            'unrealized_pnl': leg.unrealized_pnl,
-            'fee_total': leg.fee_total,
-            'funding_total': leg.funding_total,
-        }
-
+    snapshot = session.snapshot()
     return {
         'mode': 'live_replay',
         'order_state_sequences': order_state_sequences,
-        'ledger': {
-            'wallet_balance': ledger_engine.ledger.wallet_balance,
-            'equity': ledger_engine.ledger.equity,
-            'available_margin': ledger_engine.ledger.available_margin,
-            'used_margin': ledger_engine.ledger.used_margin,
-            'maintenance_margin': ledger_engine.ledger.maintenance_margin,
-            'risk_ratio': ledger_engine.ledger.risk_ratio,
-        },
-        'positions': positions,
+        'ledger': snapshot.get('ledger', {}),
+        'positions': snapshot.get('positions', {}),
+        'observed_exchange': snapshot.get('observed_exchange', {}),
         'fill_prices': live_fill_prices,
         'funding_total': funding_total,
     }

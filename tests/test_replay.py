@@ -141,3 +141,25 @@ def test_drift_report_flags_non_zero_fill_price_difference_when_paper_slips():
     )
 
     assert rep['drift_metrics']['paper_vs_live']['fill_price_drift'] > 0.0
+
+def test_build_daily_replay_report_reconstructs_live_truth_with_funding_and_observed_exchange():
+    fixture = Path(__file__).with_name('fixtures') / 'okx_live_truth_events.jsonl'
+
+    rep = build_daily_replay_report(
+        event_log_path=str(fixture),
+        day='2026-03-12',
+    )
+
+    assert rep['runtime_summary']['order_state_sequences']['cid-1'] == [
+        'intent_created',
+        'risk_accepted',
+        'submitted',
+        'acked',
+        'working',
+        'filled',
+    ]
+    assert rep['runtime_summary']['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
+    assert rep['runtime_summary']['observed_exchange']['positions']['BTC-USDT-SWAP']['long']['qty'] == 1.0
+    assert rep['runtime_summary']['observed_exchange']['account']['equity'] == 999.7
+    assert rep['drift_metrics']['paper_vs_live']['funding_booking_drift'] >= 0.0
+

@@ -476,6 +476,8 @@ def test_deploy_and_execute_order_cli_route_through_runtime_core():
     assert deploy_payload['runtime']['execution_path'] == 'runtime_core'
     assert deploy_payload['runtime']['rollout_exchange'] == 'okx'
     assert deploy_payload['runtime']['stage'] == 'paper_closure'
+    assert 'runtime_truth' in deploy_payload['runtime']
+    assert deploy_payload['runtime']['recovery_mode'] == 'cold'
     assert deploy_payload['runtime']['runtime_truth']['reconcile_ok'] is True
     assert deploy_payload['runtime']['fidelity'] in {'high', 'low'}
     assert deploy_payload['readiness']['checks_by_name']['runtime_execution_path']['ok'] is True

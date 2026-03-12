@@ -45,6 +45,12 @@ def _attach_strategy_repo_args(cmd):
 
 
 def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_binance: bool) -> dict[str, object]:
+    runtime_truth = {
+        'replay_persistence': True,
+        'degraded': False,
+        'reconcile_ok': True,
+        'recovery_mode': 'cold' if executor.state.mode == 'paper' else 'warm',
+    }
     return {
         'execution_path': 'runtime_core',
         'runtime_mode': 'derivatives',
@@ -54,12 +60,8 @@ def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_
         'stage': 'paper_closure' if executor.state.mode == 'paper' else 'micro_live',
         'fidelity': 'high',
         'order_state_sequences': executor.state.runtime.get('order_state_sequences', {}),
-        'runtime_truth': {
-            'replay_persistence': True,
-            'degraded': False,
-            'reconcile_ok': True,
-            'recovery_mode': 'cold' if executor.state.mode == 'paper' else 'warm',
-        },
+        'recovery_mode': str(runtime_truth['recovery_mode']),
+        'runtime_truth': runtime_truth,
     }
 
 

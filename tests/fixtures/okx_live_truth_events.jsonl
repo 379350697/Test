@@ -1,0 +1,5 @@
+﻿{"kind":"order_event","symbol":"BTC-USDT-SWAP","exchange":"okx","ts":"2026-03-12T00:00:00+00:00","client_order_id":"cid-1","exchange_order_id":"oid-1","status":"acked","payload":{"position_side":"long","margin_mode":"cross"}}
+{"kind":"fill_event","symbol":"BTC-USDT-SWAP","exchange":"okx","ts":"2026-03-12T00:00:01+00:00","client_order_id":"cid-1","exchange_order_id":"oid-1","trade_id":"tid-1","side":"buy","position_side":"long","qty":1.0,"price":100.0,"fee":0.1,"payload":{"margin_mode":"cross"}}
+{"kind":"account_event","exchange":"okx","ts":"2026-03-12T08:00:00+00:00","event_type":"funding","payload":{"symbol":"BTC-USDT-SWAP","position_side":"long","amount":-0.2}}
+{"kind":"account_event","exchange":"okx","ts":"2026-03-12T08:00:01+00:00","event_type":"position_snapshot","payload":{"symbol":"BTC-USDT-SWAP","position_side":"long","qty":1.0,"avg_entry_price":100.0,"margin_mode":"cross"}}
+{"kind":"account_event","exchange":"okx","ts":"2026-03-12T08:00:02+00:00","event_type":"account_snapshot","payload":{"currency":"USDT","equity":999.7,"available_margin":899.7,"used_margin":100.0,"maintenance_margin":50.0,"unrealized_pnl":0.0}}
