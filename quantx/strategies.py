@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import inspect
 from statistics import mean, pstdev
@@ -26,6 +26,16 @@ class BaseStrategy:
 
     def signal(self, candles: list[Candle], i: int) -> int:
         raise NotImplementedError
+
+    def live_sizing_hints(self, symbol: str) -> dict[str, Any]:
+        hints: dict[str, Any] = {}
+        if 'entry_margin_pct' in self.params:
+            hints['entry_margin_pct'] = float(self.params.get('entry_margin_pct', 0.0) or 0.0)
+        if 'max_leverage' in self.params:
+            hints['max_leverage'] = float(self.params.get('max_leverage', 1.0) or 1.0)
+        if 'max_position_pct' in self.params:
+            hints['max_position_pct'] = float(self.params.get('max_position_pct', 0.0) or 0.0)
+        return hints
 
     @classmethod
     def profile(cls) -> dict[str, Any]:

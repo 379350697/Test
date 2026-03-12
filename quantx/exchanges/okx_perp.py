@@ -78,17 +78,26 @@ class OKXPerpAdapter:
         )
 
     def normalize_account_event(self, payload: dict[str, Any]) -> AccountEvent:
+        row = payload
+        if isinstance(payload.get('details'), list) and payload.get('details'):
+            first = payload['details'][0]
+            if isinstance(first, dict):
+                row = dict(first)
+                if payload.get('uTime') is not None and row.get('uTime') is None:
+                    row['uTime'] = payload.get('uTime')
+                if payload.get('ts') is not None and row.get('ts') is None:
+                    row['ts'] = payload.get('ts')
         return AccountEvent(
             exchange=self.exchange,
-            ts=self._normalize_ts(payload.get('uTime') or payload.get('ts')),
+            ts=self._normalize_ts(row.get('uTime') or row.get('ts')),
             event_type='account_snapshot',
             payload={
-                'currency': str(payload.get('ccy', 'USDT')).upper(),
-                'equity': float(payload.get('eq', 0.0) or 0.0),
-                'available_margin': float(payload.get('availEq', 0.0) or 0.0),
-                'used_margin': float(payload.get('imr', 0.0) or 0.0),
-                'maintenance_margin': float(payload.get('mmr', 0.0) or 0.0),
-                'unrealized_pnl': float(payload.get('upl', 0.0) or 0.0),
+                'currency': str(row.get('ccy', 'USDT')).upper(),
+                'equity': float(row.get('eq', 0.0) or 0.0),
+                'available_margin': float(row.get('availEq', 0.0) or 0.0),
+                'used_margin': float(row.get('imr', 0.0) or 0.0),
+                'maintenance_margin': float(row.get('mmr', 0.0) or 0.0),
+                'unrealized_pnl': float(row.get('upl', 0.0) or 0.0),
             },
         )
 
@@ -154,4 +163,3 @@ class OKXPerpAdapter:
         if text.isdigit():
             return datetime.fromtimestamp(int(text) / 1000, tz=timezone.utc).isoformat()
         return text.replace('Z', '+00:00')
-

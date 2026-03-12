@@ -150,7 +150,24 @@ class RuntimeSession:
         self._observed_exchange_positions.setdefault(symbol, {})[position_side] = values
 
     def _store_account_snapshot(self, event: AccountEvent) -> None:
-        self._observed_exchange_account = self._coerce_numeric_fields(event.payload)
+        values = self._coerce_numeric_fields(event.payload, exclude={'currency'})
+        self._observed_exchange_account = values
+
+        ledger = self.ledger_engine.ledger
+        if 'wallet_balance' in values:
+            ledger.wallet_balance = values['wallet_balance']
+        elif 'equity' in values and 'unrealized_pnl' in values:
+            ledger.wallet_balance = values['equity'] - values['unrealized_pnl']
+        if 'equity' in values:
+            ledger.equity = values['equity']
+        if 'available_margin' in values:
+            ledger.available_margin = values['available_margin']
+        if 'used_margin' in values:
+            ledger.used_margin = values['used_margin']
+        if 'maintenance_margin' in values:
+            ledger.maintenance_margin = values['maintenance_margin']
+        if 'risk_ratio' in values:
+            ledger.risk_ratio = values['risk_ratio']
 
     def _coerce_numeric_fields(
         self,

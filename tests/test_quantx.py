@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -30,20 +31,21 @@ from quantx.strategy_loader import load_strategy_repos
 
 
 def test_builtin_strategy_registry_contains_core_and_aliases():
+    scalping_alias = STRATEGY_REGISTRY['scalping'].name
     expected_core = {
-        "dca",
-        "ma_crossover",
-        "macd",
-        "cta_strategy",
-        "rsi_reversal",
-        "bollinger_bands",
-        "grid",
-        "tsmom",
-        "breakout_momo",
-        "鍓ュご鐨?",
+        'dca',
+        'ma_crossover',
+        'macd',
+        'cta_strategy',
+        'rsi_reversal',
+        'bollinger_bands',
+        'grid',
+        'tsmom',
+        'breakout_momo',
+        scalping_alias,
     }
     assert expected_core.issubset(set(STRATEGY_REGISTRY))
-    assert STRATEGY_REGISTRY["breakout"] is STRATEGY_REGISTRY["cta_strategy"]
+    assert STRATEGY_REGISTRY['breakout'] is STRATEGY_REGISTRY['cta_strategy']
 
 
 def test_cta_strategy_stable_config_has_required_guardrails():
@@ -78,8 +80,9 @@ def test_breakout_strategy_default_lookback_is_applied_in_signal():
 
 
 def test_scalping_strategy_registry_and_signal():
-    assert STRATEGY_REGISTRY["scalping"] is STRATEGY_REGISTRY["鍓ュご鐨?"]
-    strategy = get_strategy_class("鍓ュご鐨?")(min_score=4)
+    scalping_alias = STRATEGY_REGISTRY['scalping'].name
+    assert STRATEGY_REGISTRY['scalping'] is STRATEGY_REGISTRY[scalping_alias]
+    strategy = get_strategy_class(scalping_alias)(min_score=4)
 
     candles = []
     for i in range(60):
@@ -480,6 +483,157 @@ def test_replay_daily_surfaces_incident_summary_and_gate_recommendation(tmp_path
     assert 'gate_recommendation' in payload
 
 
+
+
+def _write_live_deploy_backtest_report(tmp_path: Path) -> str:
+    path = tmp_path / 'backtest' / 'report.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                'promotion_summary': {
+                    'fidelity': 'high',
+                    'trade_count': 3,
+                    'fee_ratio': 0.001,
+                    'max_drawdown_pct': 5.0,
+                    'stability_score': 88.0,
+                    'runtime_mode': 'event_backtest',
+                }
+            }
+        ),
+        encoding='utf-8',
+    )
+    return str(path)
+
+
+def _write_live_deploy_paper_events(tmp_path: Path) -> str:
+    from quantx.runtime.events import OrderEvent
+    from quantx.runtime.replay_store import RuntimeReplayStore
+
+    path = tmp_path / 'paper' / 'events.jsonl'
+    store = RuntimeReplayStore(str(path))
+    store.append(
+        OrderEvent(
+            symbol='BTC-USDT-SWAP',
+            exchange='paper',
+            ts='2026-03-12T00:00:00+00:00',
+            client_order_id='paper-1',
+            exchange_order_id='paper-1',
+            status='working',
+            payload={},
+        )
+    )
+    store.append(
+        OrderEvent(
+            symbol='BTC-USDT-SWAP',
+            exchange='paper',
+            ts='2026-03-13T00:00:00+00:00',
+            client_order_id='paper-2',
+            exchange_order_id='paper-2',
+            status='filled',
+            payload={},
+        )
+    )
+    return str(path)
+
+
+def _write_live_deploy_runtime_events(tmp_path: Path) -> str:
+    from quantx.runtime.events import AccountEvent
+    from quantx.runtime.replay_store import RuntimeReplayStore
+
+    path = tmp_path / 'runtime' / 'events.jsonl'
+    RuntimeReplayStore(str(path)).append(
+        AccountEvent(
+            exchange='okx',
+            ts='2026-03-12T00:00:00+00:00',
+            event_type='account_snapshot',
+            payload={
+                'currency': 'USDT',
+                'equity': 1000.0,
+                'available_margin': 900.0,
+                'used_margin': 100.0,
+                'maintenance_margin': 10.0,
+                'unrealized_pnl': 0.0,
+            },
+        )
+    )
+    return str(path)
+
+
+def _workspace_tmp_dir(label: str) -> Path:
+    from uuid import uuid4
+
+    path = Path('py_tmp_quantx') / f'{label}-{uuid4().hex}'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class _DeployExchange:
+    def place_order(self, order):
+        raise AssertionError('live deploy preflight should not place probe orders')
+
+    def cancel_order(self, symbol: str, client_order_id: str) -> dict[str, object]:
+        return {'ok': True, 'symbol': symbol, 'clientOrderId': client_order_id}
+
+    def get_open_orders(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return []
+
+    def get_raw_open_orders(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return []
+
+    def get_account_positions(self):
+        return []
+
+    def get_raw_account_positions(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return [
+            {
+                'instId': 'BTC-USDT-SWAP',
+                'posSide': 'net',
+                'pos': '0',
+                'avgPx': '0',
+                'mgnMode': 'cross',
+                'uTime': '1710201600000',
+            }
+        ]
+
+    def get_raw_account_snapshot(self) -> dict[str, object]:
+        return {
+            'uTime': '1710201600000',
+            'details': [
+                {
+                    'ccy': 'USDT',
+                    'eq': '1000',
+                    'availEq': '900',
+                    'imr': '100',
+                    'mmr': '10',
+                    'upl': '0',
+                }
+            ],
+        }
+
+    def validate_account_mode(self) -> dict[str, object]:
+        return {
+            'product_type': 'swap',
+            'margin_mode': 'cross',
+            'position_mode': 'net',
+        }
+    def get_symbol_specs(self, symbols: list[str] | None = None):
+        from quantx.exchanges.base import SymbolSpec
+
+        pool = {
+            'BTC-USDT-SWAP': SymbolSpec(
+                symbol='BTC-USDT-SWAP',
+                tick_size=0.1,
+                lot_size=0.001,
+                min_qty=0.001,
+                min_notional=5.0,
+            )
+        }
+        if not symbols:
+            return pool
+        wants = {symbol.upper() for symbol in symbols}
+        return {symbol: spec for symbol, spec in pool.items() if symbol.upper() in wants}
+
 def test_deploy_and_execute_order_cli_route_through_runtime_core():
     from quantx.cli import main
 
@@ -513,6 +667,175 @@ def test_deploy_and_execute_order_cli_route_through_runtime_core():
     assert deploy_payload['readiness']['checks_by_name']['runtime_execution_path']['ok'] is True
     assert deploy_payload['readiness']['checks_by_name']['rollout_exchange_order']['ok'] is True
     assert deploy_payload['readiness']['checks_by_name']['paper_closure_ready']['ok'] is True
+
+
+
+def test_deploy_live_requires_real_gate_artifacts():
+    from quantx.cli import main
+
+    with pytest.raises(ValueError, match='deploy_live_requires'):
+        main(['deploy', '--mode', 'live', '--json'])
+
+
+
+def test_deploy_live_fails_closed_when_readiness_contract_is_not_met(monkeypatch):
+    from quantx.cli import main
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+    from quantx.readiness import ReadinessError
+
+    tmp_path = _workspace_tmp_dir('deploy-live-fail-closed')
+    backtest_report = _write_live_deploy_backtest_report(tmp_path)
+    paper_events = _write_live_deploy_paper_events(tmp_path)
+    runtime_events = _write_live_deploy_runtime_events(tmp_path)
+
+    import quantx.cli as cli
+
+    monkeypatch.setattr(cli, '_build_exchange_client', lambda exchange, **kwargs: _DeployExchange(), raising=False)
+    monkeypatch.setattr(cli, '_build_runtime_adapter', lambda exchange: OKXPerpAdapter(), raising=False)
+
+    with pytest.raises(ReadinessError, match='go_live_blocked'):
+        main([
+            'deploy',
+            '--mode', 'live',
+            '--exchange', 'okx',
+            '--symbol', 'BTC-USDT-SWAP',
+            '--backtest-report', backtest_report,
+            '--paper-events', paper_events,
+            '--paper-duration-minutes', '1440',
+            '--runtime-events', runtime_events,
+            '--oms', str(tmp_path / 'oms' / 'events.jsonl'),
+            '--json',
+        ])
+
+
+
+def test_deploy_live_uses_live_service_bootstrap_and_assert_ready(monkeypatch):
+    import quantx.cli as cli
+    from quantx.bootstrap import bootstrap_recover_and_reconcile as real_bootstrap_recover_and_reconcile
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+    from quantx.readiness import assert_ready as real_assert_ready
+
+    tmp_path = _workspace_tmp_dir('deploy-live-green')
+    backtest_report = _write_live_deploy_backtest_report(tmp_path)
+    paper_events = _write_live_deploy_paper_events(tmp_path)
+    runtime_events = _write_live_deploy_runtime_events(tmp_path)
+    calls = {'bootstrap': 0, 'assert_ready': 0}
+
+    def _unexpected_paper_executor(*args, **kwargs):
+        raise AssertionError('PaperLiveExecutor should not be used for live deploy')
+
+    def _spy_bootstrap(**kwargs):
+        calls['bootstrap'] += 1
+        return real_bootstrap_recover_and_reconcile(**kwargs)
+
+    def _spy_assert_ready(ctx):
+        calls['assert_ready'] += 1
+        return real_assert_ready(ctx)
+
+    monkeypatch.setattr(cli, 'PaperLiveExecutor', _unexpected_paper_executor)
+    monkeypatch.setattr(cli, 'bootstrap_recover_and_reconcile', _spy_bootstrap, raising=False)
+    monkeypatch.setattr(cli, 'assert_ready', _spy_assert_ready, raising=False)
+    monkeypatch.setattr(cli, '_build_exchange_client', lambda exchange, **kwargs: _DeployExchange(), raising=False)
+    monkeypatch.setattr(cli, '_build_runtime_adapter', lambda exchange: OKXPerpAdapter(), raising=False)
+
+    payload = cli.main([
+        'deploy',
+        '--mode', 'live',
+        '--exchange', 'okx',
+        '--symbol', 'BTC-USDT-SWAP',
+        '--backtest-report', backtest_report,
+        '--paper-events', paper_events,
+        '--paper-duration-minutes', '1440',
+        '--runtime-events', runtime_events,
+        '--oms', str(tmp_path / 'oms' / 'events.jsonl'),
+        '--alert-webhook', 'https://example.com/hook',
+        '--json',
+    ])
+
+    assert calls == {'bootstrap': 1, 'assert_ready': 1}
+    assert payload['runtime']['execution_path'] == 'live_service'
+    assert payload['runtime']['rollout_exchange'] == 'okx'
+    assert payload['runtime']['stage'] == 'micro_live'
+    assert payload['bootstrap']['recovery_mode'] == 'warm'
+    assert payload['bootstrap']['resume_mode'] == 'live'
+    assert payload['bootstrap']['promotion_policy']['live_capital_allowed'] is True
+    assert payload['promotion_gates']['eligible_stage'] == 'live_ready'
+    assert payload['readiness']['ok'] is True
+    assert payload['readiness']['checks_by_name']['promotion_stage_gate']['ok'] is True
+    assert payload['readiness']['checks_by_name']['bootstrap_resume_mode_gate']['ok'] is True
+
+
+def test_autotrade_start_requires_strategy_watchlist_total_margin_and_live_artifacts(monkeypatch):
+    import quantx.cli as cli
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    tmp_path = _workspace_tmp_dir('autotrade-start-green')
+    backtest_report = _write_live_deploy_backtest_report(tmp_path)
+    paper_events = _write_live_deploy_paper_events(tmp_path)
+    runtime_events = _write_live_deploy_runtime_events(tmp_path)
+
+    def _unexpected_paper_executor(*args, **kwargs):
+        raise AssertionError('PaperLiveExecutor should not be used for unattended autotrade start')
+
+    monkeypatch.setattr(cli, 'PaperLiveExecutor', _unexpected_paper_executor)
+    monkeypatch.setattr(cli, '_build_exchange_client', lambda exchange, **kwargs: _DeployExchange(), raising=False)
+    monkeypatch.setattr(cli, '_build_runtime_adapter', lambda exchange: OKXPerpAdapter(), raising=False)
+
+    payload = cli.main([
+        'autotrade-start',
+        '--exchange', 'okx',
+        '--strategy', 'cta_strategy',
+        '--watchlist', '["BTC-USDT-SWAP","ETH-USDT-SWAP"]',
+        '--total-margin', '1000',
+        '--backtest-report', backtest_report,
+        '--paper-events', paper_events,
+        '--paper-duration-minutes', '1440',
+        '--runtime-events', runtime_events,
+        '--oms', str(tmp_path / 'oms' / 'events.jsonl'),
+        '--alert-webhook', 'https://example.com/hook',
+        '--json',
+    ])
+
+    assert payload['supervisor']['state'] in {'warming', 'live_active'}
+    assert payload['runtime']['execution_path'] == 'runtime_core'
+    assert payload['runtime']['allowed_symbols'] == ['BTC-USDT-SWAP', 'ETH-USDT-SWAP']
+    assert payload['allocation']['total_margin'] == pytest.approx(1000.0)
+    assert set(payload['allocation']['symbol_budgets']) == {'BTC-USDT-SWAP', 'ETH-USDT-SWAP'}
+    assert payload['readiness']['ok'] is True
+
+
+
+def test_autotrade_status_returns_supervisor_runtime_truth_snapshot(monkeypatch):
+    import quantx.cli as cli
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    tmp_path = _workspace_tmp_dir('autotrade-status-green')
+    backtest_report = _write_live_deploy_backtest_report(tmp_path)
+    paper_events = _write_live_deploy_paper_events(tmp_path)
+    runtime_events = _write_live_deploy_runtime_events(tmp_path)
+
+    monkeypatch.setattr(cli, '_build_exchange_client', lambda exchange, **kwargs: _DeployExchange(), raising=False)
+    monkeypatch.setattr(cli, '_build_runtime_adapter', lambda exchange: OKXPerpAdapter(), raising=False)
+
+    payload = cli.main([
+        'autotrade-status',
+        '--exchange', 'okx',
+        '--strategy', 'cta_strategy',
+        '--watchlist', '["BTC-USDT-SWAP","ETH-USDT-SWAP"]',
+        '--total-margin', '1000',
+        '--backtest-report', backtest_report,
+        '--paper-events', paper_events,
+        '--paper-duration-minutes', '1440',
+        '--runtime-events', runtime_events,
+        '--oms', str(tmp_path / 'oms' / 'events.jsonl'),
+        '--alert-webhook', 'https://example.com/hook',
+        '--json',
+    ])
+
+    assert payload['supervisor']['state'] in {'warming', 'live_active'}
+    assert payload['runtime']['execution_path'] == 'runtime_core'
+    assert payload['runtime']['runtime_truth']['replay_persistence'] is True
+    assert payload['readiness']['checks_by_name']['micro_live_ready']['ok'] is True
 
 
 def test_event_backtest_runtime_path():

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
+from typing import Any
 
 from .abtest import run_ab_test
 from .alerts import AlertRouter
 from .analytics import in_out_sample_split, monte_carlo_equity
 from .backtest import result_to_dict, run_backtest, run_parallel_matrix
+from .bootstrap import bootstrap_recover_and_reconcile
 from .credentials import credential_presence_snapshot, load_binance_credentials, load_okx_credentials
 from .data import (
     generate_demo_data,
@@ -19,20 +22,27 @@ from .data import (
 )
 from .exchange import fetch_binance_klines, write_ohlcv_csv
 from .execution import PaperLiveExecutor
-from .live_service import LiveExecutionConfig
+from .exchanges.binance import BinanceClient
+from .exchanges.binance_perp import BinancePerpAdapter
+from .exchanges.okx_perp_client import OKXPerpClient
+from .exchanges.okx_perp import OKXPerpAdapter
+from .live_margin_allocator import MarginAllocator
+from .live_service import LiveExecutionConfig, LiveExecutionService
+from .live_supervisor import LiveSupervisor
 from .micro_backtest import run_orderbook_replay, run_tick_backtest
 from .ml_adapter import online_update, simple_sentiment
 from .models import BacktestConfig
 from .monitoring import analyze_logs, monitor_equity
+from .oms import JsonlOMSStore
 from .paper_harness import run_paper_harness
 from .optimize import grid_search, random_scan, walk_forward
 from .radar import scan_watchlist
-from .readiness import ReadinessContext, evaluate_readiness, rollout_stage
+from .readiness import ReadinessContext, assert_ready, evaluate_readiness, rollout_stage
 from .release_gates import evaluate_release_gates
 from .replay import build_daily_replay_report
-from .reporting import write_report, write_report_payload
+from .reporting import build_venue_contract, write_report, write_report_payload
 from .risk_engine import RiskLimits
-from .strategies import list_strategies
+from .strategies import get_strategy_class, list_strategies
 from .strategy_loader import load_strategy_repos
 
 def _print(payload: dict | list, as_json: bool):
@@ -124,6 +134,444 @@ def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance:
         'checks': report.checks,
         'checks_by_name': {check['name']: check for check in report.checks},
         'promotion_gates': promotion_gates,
+    }
+
+def _load_report_payload(path: str) -> dict[str, Any]:
+    with open(path, 'r', encoding='utf-8') as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f'deploy_report_payload_invalid:{path}')
+    return payload
+
+
+def _build_exchange_client(exchange: str, **_: Any):
+    exchange_name = exchange.lower()
+    if exchange_name == 'okx':
+        creds = load_okx_credentials()
+        return OKXPerpClient(
+            api_key=creds.api_key,
+            api_secret=creds.api_secret,
+            passphrase=creds.passphrase,
+            inst_type='SWAP',
+        )
+    if exchange_name == 'binance':
+        creds = load_binance_credentials()
+        return BinanceClient(api_key=creds.api_key, api_secret=creds.api_secret)
+    raise ValueError(f'unsupported_exchange:{exchange}')
+
+
+def _build_runtime_adapter(exchange: str):
+    exchange_name = exchange.lower()
+    if exchange_name == 'okx':
+        return OKXPerpAdapter()
+    if exchange_name == 'binance':
+        return BinancePerpAdapter()
+    raise ValueError(f'unsupported_exchange:{exchange}')
+
+
+def _build_backtest_gate_input(report_path: str) -> tuple[dict[str, object], dict[str, object]]:
+    payload = _load_report_payload(report_path)
+    promotion_summary = payload.get('promotion_summary', {}) if isinstance(payload.get('promotion_summary'), dict) else {}
+    metrics = payload.get('metrics', {}) if isinstance(payload.get('metrics'), dict) else {}
+    max_drawdown_pct = promotion_summary.get('max_drawdown_pct', metrics.get('max_drawdown_pct', 0.0))
+    return (
+        {
+            'ok': bool(promotion_summary or metrics),
+            'max_drawdown_pct': float(max_drawdown_pct or 0.0),
+        },
+        promotion_summary,
+    )
+
+
+def _build_paper_gate_input(event_log_path: str, *, duration_minutes: int) -> tuple[dict[str, object], dict[str, object]]:
+    summary = run_paper_harness(event_log_path=event_log_path, duration_minutes=duration_minutes)
+    return (
+        {
+            'ok': Path(event_log_path).exists(),
+            'continuous_hours': float(summary.get('continuous_minutes', 0.0) or 0.0) / 60.0,
+            'alerts_ok': bool(summary.get('alerts_ok', False)),
+        },
+        summary,
+    )
+
+
+def _rollout_gate(exchange: str, enable_binance: bool) -> str:
+    return 'okx_first' if exchange == 'okx' or enable_binance else 'blocked_until_okx_rollout'
+
+
+def _build_alert_router(webhooks: list[str]) -> AlertRouter:
+    router = AlertRouter()
+    for idx, webhook in enumerate(webhooks):
+        name = 'ops' if idx == 0 else f'ops_{idx + 1}'
+        router.register_webhook(name, webhook)
+    return router
+
+
+def _readiness_payload(report, *, ctx: ReadinessContext, promotion_gates: dict[str, object]) -> dict[str, object]:
+    return {
+        'ok': report.ok,
+        'score': report.score,
+        'stage': rollout_stage(ctx),
+        'checks': report.checks,
+        'checks_by_name': {check['name']: check for check in report.checks},
+        'promotion_gates': promotion_gates,
+    }
+
+
+def _live_deploy_missing_artifacts(args) -> list[str]:
+    required = ('backtest_report', 'paper_events', 'runtime_events', 'oms')
+    missing: list[str] = []
+    for field_name in required:
+        value = getattr(args, field_name, '')
+        if not str(value or '').strip():
+            missing.append(field_name)
+    return missing
+
+
+def _build_live_deploy_payload(args) -> dict[str, object]:
+    missing = _live_deploy_missing_artifacts(args)
+    if missing:
+        raise ValueError(f"deploy_live_requires:{','.join(missing)}")
+
+    symbol = args.symbol.upper()
+    backtest_gate, promotion_summary = _build_backtest_gate_input(args.backtest_report)
+    paper_gate, paper_summary = _build_paper_gate_input(
+        args.paper_events,
+        duration_minutes=args.paper_duration_minutes,
+    )
+    live_config = LiveExecutionConfig(
+        dry_run=False,
+        allowed_symbols=(symbol,),
+        max_orders_per_cycle=args.max_orders_per_cycle,
+        max_notional_per_cycle=args.max_notional_per_cycle,
+        runtime_mode='derivatives',
+        exchange=args.exchange,
+        enable_binance=args.enable_binance,
+    )
+    service = LiveExecutionService(
+        _build_exchange_client(args.exchange),
+        config=live_config,
+        runtime_adapter=_build_runtime_adapter(args.exchange),
+        runtime_event_log_path=(args.runtime_events or None),
+    )
+    service.sync_symbol_rules([symbol])
+
+    oms_store = JsonlOMSStore(args.oms)
+    bootstrap_report = bootstrap_recover_and_reconcile(
+        service=service,
+        oms_store=oms_store,
+        initial_cash=args.initial_cash,
+        symbol=args.symbol,
+        runtime_event_log_path=(args.runtime_events or None),
+    )
+    runtime_truth = bootstrap_report.get('runtime_status', {})
+    promotion_gates = evaluate_release_gates(
+        backtest=backtest_gate,
+        paper=paper_gate,
+        live={
+            'runtime_truth_ok': bool((bootstrap_report.get('promotion_policy') or {}).get('runtime_truth_ok', False)),
+            'resume_mode': str(bootstrap_report.get('resume_mode', 'blocked')),
+        },
+    )
+    ctx = ReadinessContext(
+        live_config=live_config,
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=args.max_notional_per_cycle),
+        alert_router=_build_alert_router(args.alert_webhook),
+        oms_store=oms_store,
+        runtime_status=runtime_truth if isinstance(runtime_truth, dict) else {},
+        promotion_gates=promotion_gates,
+    )
+    readiness_report = assert_ready(ctx)
+    runtime_snapshot = service.runtime_snapshot()
+    venue_contract = build_venue_contract(
+        symbol=symbol,
+        exchange=args.exchange,
+        fidelity=str(promotion_summary.get('fidelity', 'high')),
+    )
+    return {
+        'bootstrap': bootstrap_report,
+        'paper': paper_summary,
+        'venue_contract': venue_contract,
+        'runtime_mode': str(venue_contract['runtime_mode']),
+        'fidelity': str(venue_contract['fidelity']),
+        'runtime': {
+            'execution_path': 'live_service',
+            'runtime_mode': 'derivatives',
+            'venue_contract': venue_contract,
+            'rollout_exchange': args.exchange,
+            'adapter_contract': f'{args.exchange}_perp',
+            'rollout_gate': _rollout_gate(args.exchange, args.enable_binance),
+            'stage': rollout_stage(ctx),
+            'fidelity': str(promotion_summary.get('fidelity', 'high')),
+            'order_state_sequences': runtime_snapshot.get('order_state_sequences', {}),
+            'recovery_mode': str((runtime_truth or {}).get('recovery_mode', 'unknown')),
+            'runtime_truth': runtime_truth,
+        },
+        'readiness': _readiness_payload(readiness_report, ctx=ctx, promotion_gates=promotion_gates),
+        'promotion_gates': promotion_gates,
+        'state': {
+            'symbol_rules': {
+                key: {
+                    'tick_size': value.tick_size,
+                    'lot_size': value.lot_size,
+                    'min_qty': value.min_qty,
+                    'min_notional': value.min_notional,
+                }
+                for key, value in service.symbol_rules.items()
+            },
+            'runtime_snapshot': runtime_snapshot,
+        },
+    }
+
+
+def _parse_watchlist(value: str) -> tuple[str, ...]:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError('autotrade_watchlist_invalid') from exc
+    if not isinstance(payload, list):
+        raise ValueError('autotrade_watchlist_invalid')
+
+    watchlist: list[str] = []
+    seen: set[str] = set()
+    for item in payload:
+        symbol = str(item).upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        watchlist.append(symbol)
+        seen.add(symbol)
+    if not watchlist:
+        raise ValueError('autotrade_watchlist_invalid')
+    return tuple(watchlist)
+
+
+def _parse_strategy_params(value: str) -> dict[str, Any]:
+    text = str(value or '').strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError('autotrade_strategy_params_invalid') from exc
+    if not isinstance(payload, dict):
+        raise ValueError('autotrade_strategy_params_invalid')
+    return dict(payload)
+
+
+def _autotrade_missing_requirements(args) -> list[str]:
+    missing = _live_deploy_missing_artifacts(args)
+    if not str(getattr(args, 'strategy', '') or '').strip():
+        missing.append('strategy')
+    if not str(getattr(args, 'watchlist', '') or '').strip():
+        missing.append('watchlist')
+    if float(getattr(args, 'total_margin', 0.0) or 0.0) <= 0:
+        missing.append('total_margin')
+    return missing
+
+
+def _build_autotrade_strategy_payload(
+    strategy_name: str,
+    *,
+    strategy_params: dict[str, Any],
+    watchlist: tuple[str, ...],
+    default_max_leverage: float,
+) -> tuple[dict[str, object], dict[str, float], float]:
+    strategy_cls = get_strategy_class(strategy_name)
+    sizing_hints: dict[str, dict[str, Any]] = {}
+    target_scores: dict[str, float] = {}
+    resolved_max_leverage = max(float(default_max_leverage or 0.0), 1.0)
+
+    for symbol in watchlist:
+        strategy = strategy_cls(**strategy_params)
+        raw_hints = strategy.live_sizing_hints(symbol)
+        hints = dict(raw_hints) if isinstance(raw_hints, dict) else {}
+        sizing_hints[symbol] = hints
+        score = float(hints.get('entry_margin_pct', 1.0) or 1.0)
+        target_scores[symbol] = score if score > 0 else 1.0
+        symbol_leverage = float(hints.get('max_leverage', default_max_leverage) or default_max_leverage)
+        resolved_max_leverage = max(resolved_max_leverage, symbol_leverage)
+
+    profile = strategy_cls.profile() if hasattr(strategy_cls, 'profile') else {'name': strategy_name}
+    return (
+        {
+            'name': strategy_name,
+            'params': strategy_params,
+            'watchlist': list(watchlist),
+            'profile': profile,
+            'sizing_hints': sizing_hints,
+        },
+        target_scores,
+        resolved_max_leverage,
+    )
+
+
+def _serialize_symbol_budgets(budgets: dict[str, object]) -> dict[str, dict[str, float]]:
+    payload: dict[str, dict[str, float]] = {}
+    for symbol, budget in budgets.items():
+        payload[str(symbol).upper()] = {
+            'max_margin': float(getattr(budget, 'max_margin', 0.0) or 0.0),
+            'max_notional': float(getattr(budget, 'max_notional', 0.0) or 0.0),
+            'max_leverage': float(getattr(budget, 'max_leverage', 0.0) or 0.0),
+        }
+    return payload
+
+
+def _build_supervisor_snapshot(runtime_status: dict[str, Any], *, ready: bool) -> dict[str, object]:
+    supervisor = LiveSupervisor()
+    stream_status = runtime_status.get('stream', {}) if isinstance(runtime_status.get('stream'), dict) else {}
+    execution_mode = str(runtime_status.get('execution_mode', 'blocked'))
+
+    if not ready:
+        supervisor.state = 'readiness_blocked'
+    else:
+        supervisor.mark_bootstrap_ready()
+        if not bool(runtime_status.get('bootstrap_net_position_match', True)):
+            supervisor.on_position_mismatch_detected()
+        elif execution_mode == 'read_only':
+            supervisor.mark_read_only()
+        elif execution_mode == 'reduce_only' or bool(stream_status.get('gap_detected')) or bool(stream_status.get('stale')) or bool(stream_status.get('reconcile_required')):
+            supervisor.on_stream_gap_detected()
+        elif execution_mode == 'live':
+            supervisor.mark_live_active()
+
+    return {
+        'state': supervisor.state,
+        'execution_mode': execution_mode,
+        'recovery_mode': str(runtime_status.get('recovery_mode', 'unknown')),
+        'stream': stream_status,
+        'degraded': bool(runtime_status.get('degraded', False)),
+    }
+
+
+def _build_autotrade_payload(args, *, enforce_ready: bool) -> dict[str, object]:
+    missing = _autotrade_missing_requirements(args)
+    if missing:
+        raise ValueError(f"autotrade_requires:{','.join(missing)}")
+
+    watchlist = _parse_watchlist(args.watchlist)
+    strategy_params = _parse_strategy_params(args.strategy_params)
+    strategy_payload, target_scores, allocator_max_leverage = _build_autotrade_strategy_payload(
+        args.strategy,
+        strategy_params=strategy_params,
+        watchlist=watchlist,
+        default_max_leverage=float(args.max_leverage),
+    )
+    backtest_gate, promotion_summary = _build_backtest_gate_input(args.backtest_report)
+    paper_gate, paper_summary = _build_paper_gate_input(
+        args.paper_events,
+        duration_minutes=args.paper_duration_minutes,
+    )
+    max_notional_per_cycle = float(args.max_notional_per_cycle or 0.0)
+    if max_notional_per_cycle <= 0:
+        max_notional_per_cycle = max(float(args.total_margin) * allocator_max_leverage, float(args.total_margin))
+
+    live_config = LiveExecutionConfig(
+        dry_run=False,
+        allowed_symbols=watchlist,
+        max_orders_per_cycle=args.max_orders_per_cycle,
+        max_notional_per_cycle=max_notional_per_cycle,
+        runtime_mode='derivatives',
+        exchange=args.exchange,
+        enable_binance=args.enable_binance,
+    )
+    service = LiveExecutionService(
+        _build_exchange_client(args.exchange),
+        config=live_config,
+        runtime_adapter=_build_runtime_adapter(args.exchange),
+        runtime_event_log_path=(args.runtime_events or None),
+    )
+    service.sync_symbol_rules(list(watchlist))
+
+    allocator = MarginAllocator(
+        total_margin=float(args.total_margin),
+        max_symbol_weight=float(args.max_symbol_weight),
+        max_leverage=allocator_max_leverage,
+    )
+    budgets = allocator.allocate(watchlist=watchlist, target_scores=target_scores)
+    service.set_symbol_budgets(budgets)
+
+    oms_store = JsonlOMSStore(args.oms)
+    bootstrap_report = bootstrap_recover_and_reconcile(
+        service=service,
+        oms_store=oms_store,
+        initial_cash=args.initial_cash,
+        symbol=None,
+        runtime_event_log_path=(args.runtime_events or None),
+    )
+    runtime_truth = bootstrap_report.get('runtime_status', {})
+    runtime_truth_payload = runtime_truth if isinstance(runtime_truth, dict) else {}
+    promotion_gates = evaluate_release_gates(
+        backtest=backtest_gate,
+        paper=paper_gate,
+        live={
+            'runtime_truth_ok': bool((bootstrap_report.get('promotion_policy') or {}).get('runtime_truth_ok', False)),
+            'resume_mode': str(bootstrap_report.get('resume_mode', 'blocked')),
+        },
+    )
+    ctx = ReadinessContext(
+        live_config=live_config,
+        risk_limits=RiskLimits(
+            max_symbol_weight=float(args.max_symbol_weight),
+            max_order_notional=max_notional_per_cycle,
+        ),
+        alert_router=_build_alert_router(args.alert_webhook),
+        oms_store=oms_store,
+        runtime_status=runtime_truth_payload,
+        promotion_gates=promotion_gates,
+    )
+    readiness_report = assert_ready(ctx) if enforce_ready else evaluate_readiness(ctx)
+    runtime_snapshot = service.runtime_snapshot()
+    supervisor_payload = _build_supervisor_snapshot(runtime_truth_payload, ready=readiness_report.ok)
+    venue_contract = build_venue_contract(
+        symbol=watchlist[0],
+        exchange=args.exchange,
+        fidelity=str(promotion_summary.get('fidelity', 'high')),
+    )
+
+    return {
+        'strategy': strategy_payload,
+        'allocation': {
+            'total_margin': float(args.total_margin),
+            'max_symbol_weight': float(args.max_symbol_weight),
+            'max_leverage': float(allocator_max_leverage),
+            'target_scores': target_scores,
+            'symbol_budgets': _serialize_symbol_budgets(budgets),
+        },
+        'supervisor': supervisor_payload,
+        'bootstrap': bootstrap_report,
+        'paper': paper_summary,
+        'venue_contract': venue_contract,
+        'runtime_mode': str(venue_contract['runtime_mode']),
+        'fidelity': str(venue_contract['fidelity']),
+        'runtime': {
+            'execution_path': 'runtime_core',
+            'runtime_mode': 'derivatives',
+            'venue_contract': venue_contract,
+            'rollout_exchange': args.exchange,
+            'adapter_contract': f'{args.exchange}_perp',
+            'rollout_gate': _rollout_gate(args.exchange, args.enable_binance),
+            'stage': rollout_stage(ctx),
+            'fidelity': str(promotion_summary.get('fidelity', 'high')),
+            'allowed_symbols': list(watchlist),
+            'order_state_sequences': runtime_snapshot.get('order_state_sequences', {}),
+            'recovery_mode': str(runtime_truth_payload.get('recovery_mode', 'unknown')),
+            'execution_mode': str(runtime_truth_payload.get('execution_mode', 'blocked')),
+            'runtime_truth': runtime_truth_payload,
+        },
+        'readiness': _readiness_payload(readiness_report, ctx=ctx, promotion_gates=promotion_gates),
+        'promotion_gates': promotion_gates,
+        'state': {
+            'symbol_rules': {
+                key: {
+                    'tick_size': value.tick_size,
+                    'lot_size': value.lot_size,
+                    'min_qty': value.min_qty,
+                    'min_notional': value.min_notional,
+                }
+                for key, value in service.symbol_rules.items()
+            },
+            'runtime_snapshot': runtime_snapshot,
+        },
     }
 
 def build_parser():
@@ -308,7 +756,58 @@ def build_parser():
     x.add_argument("--exchange", choices=["okx", "binance"], default="okx")
     x.add_argument("--enable-binance", action="store_true")
     x.add_argument("--symbol", default="BTCUSDT")
+    x.add_argument("--backtest-report", default="")
+    x.add_argument("--paper-events", default="")
+    x.add_argument("--paper-duration-minutes", type=int, default=1440)
+    x.add_argument("--runtime-events", default="")
+    x.add_argument("--oms", default="")
+    x.add_argument("--alert-webhook", action="append", default=[])
+    x.add_argument("--initial-cash", type=float, default=0.0)
+    x.add_argument("--max-orders-per-cycle", type=int, default=1)
+    x.add_argument("--max-notional-per-cycle", type=float, default=1000.0)
     x.add_argument("--json", action="store_true")
+
+    ats = sub.add_parser("autotrade-start")
+    ats.add_argument("--exchange", choices=["okx", "binance"], default="okx")
+    ats.add_argument("--enable-binance", action="store_true")
+    ats.add_argument("--strategy", required=True)
+    ats.add_argument("--strategy-params", default="{}")
+    ats.add_argument("--watchlist", required=True)
+    ats.add_argument("--total-margin", type=float, required=True)
+    ats.add_argument("--backtest-report", default="")
+    ats.add_argument("--paper-events", default="")
+    ats.add_argument("--paper-duration-minutes", type=int, default=1440)
+    ats.add_argument("--runtime-events", default="")
+    ats.add_argument("--oms", default="")
+    ats.add_argument("--alert-webhook", action="append", default=[])
+    ats.add_argument("--initial-cash", type=float, default=0.0)
+    ats.add_argument("--max-orders-per-cycle", type=int, default=1)
+    ats.add_argument("--max-notional-per-cycle", type=float, default=0.0)
+    ats.add_argument("--max-symbol-weight", type=float, default=0.5)
+    ats.add_argument("--max-leverage", type=float, default=1.0)
+    _attach_strategy_repo_args(ats)
+    ats.add_argument("--json", action="store_true")
+
+    ast = sub.add_parser("autotrade-status")
+    ast.add_argument("--exchange", choices=["okx", "binance"], default="okx")
+    ast.add_argument("--enable-binance", action="store_true")
+    ast.add_argument("--strategy", required=True)
+    ast.add_argument("--strategy-params", default="{}")
+    ast.add_argument("--watchlist", required=True)
+    ast.add_argument("--total-margin", type=float, required=True)
+    ast.add_argument("--backtest-report", default="")
+    ast.add_argument("--paper-events", default="")
+    ast.add_argument("--paper-duration-minutes", type=int, default=1440)
+    ast.add_argument("--runtime-events", default="")
+    ast.add_argument("--oms", default="")
+    ast.add_argument("--alert-webhook", action="append", default=[])
+    ast.add_argument("--initial-cash", type=float, default=0.0)
+    ast.add_argument("--max-orders-per-cycle", type=int, default=1)
+    ast.add_argument("--max-notional-per-cycle", type=float, default=0.0)
+    ast.add_argument("--max-symbol-weight", type=float, default=0.5)
+    ast.add_argument("--max-leverage", type=float, default=1.0)
+    _attach_strategy_repo_args(ast)
+    ast.add_argument("--json", action="store_true")
     return p
 
 
@@ -492,7 +991,22 @@ def main(argv=None):
         _print(payload, True if args.json else False)
         return
 
+    if args.cmd == "autotrade-start":
+        payload = _build_autotrade_payload(args, enforce_ready=True)
+        _print(payload, args.json)
+        return payload
+
+    if args.cmd == "autotrade-status":
+        payload = _build_autotrade_payload(args, enforce_ready=False)
+        _print(payload, args.json)
+        return payload
+
     if args.cmd == "deploy":
+        if args.mode == 'live':
+            payload = _build_live_deploy_payload(args)
+            _print(payload, args.json)
+            return payload
+
         ex = PaperLiveExecutor(args.mode)
         ex.arm()
         probe = ex.place_order(args.symbol, "BUY", 0.01, position_side="long")

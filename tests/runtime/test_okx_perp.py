@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from quantx.exchanges.base import ExchangeOrder
 from quantx.exchanges.okx_perp import OKXPerpAdapter
+from quantx.live_service import LiveExecutionConfig, LiveExecutionService
 from quantx.runtime.events import AccountEvent, FillEvent, OrderEvent
 
 
@@ -142,3 +143,64 @@ def test_okx_perp_adapter_normalizes_funding_and_reconciliation_only_snapshots()
     assert funding.payload['amount'] == -0.2
     assert position.event_type == 'position_snapshot'
     assert account.event_type == 'account_snapshot'
+
+
+class _OKXPerpRuntimeStub:
+    def get_raw_open_orders(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return [
+            {
+                'instId': 'BTC-USDT-SWAP',
+                'clOrdId': 'cid-1',
+                'ordId': 'oid-1',
+                'state': 'live',
+                'side': 'buy',
+                'posSide': 'net',
+                'tdMode': 'cross',
+                'uTime': '1710201600000',
+            }
+        ]
+
+    def get_raw_account_positions(self, symbol: str | None = None) -> list[dict[str, object]]:
+        return [
+            {
+                'instId': 'BTC-USDT-SWAP',
+                'posSide': 'net',
+                'pos': '0.25',
+                'avgPx': '100000',
+                'mgnMode': 'cross',
+                'uTime': '1710201602000',
+            }
+        ]
+
+    def get_raw_account_snapshot(self) -> dict[str, object]:
+        return {
+            'uTime': '1710201603000',
+            'details': [
+                {
+                    'ccy': 'USDT',
+                    'eq': '1000',
+                    'availEq': '800',
+                    'imr': '120',
+                    'mmr': '50',
+                    'upl': '25',
+                }
+            ],
+        }
+
+    def validate_account_mode(self) -> dict[str, str]:
+        return {'product_type': 'swap', 'margin_mode': 'cross', 'position_mode': 'net'}
+
+
+def test_live_execution_service_reconcile_prefers_okx_perp_raw_snapshots_and_account_state():
+    client = _OKXPerpRuntimeStub()
+    service = LiveExecutionService(
+        client,
+        runtime_adapter=OKXPerpAdapter(),
+        config=LiveExecutionConfig(dry_run=False),
+    )
+
+    snapshot = service.reconcile('BTC-USDT-SWAP')
+
+    assert snapshot['open_orders'][0]['symbol'] == 'BTC-USDT-SWAP'
+    assert snapshot['runtime_positions'][0]['position_side'] == 'net'
+    assert snapshot['runtime_snapshot']['ledger']['available_margin'] == 800.0

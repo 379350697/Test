@@ -41,6 +41,34 @@ def build_promotion_summary(
     }
 
 
+def build_venue_contract(
+    *,
+    symbol: str | None = None,
+    exchange: str | None = None,
+    product: str | None = None,
+    margin_mode: str | None = None,
+    position_mode: str | None = None,
+    runtime_mode: str | None = None,
+    fidelity: str | None = None,
+) -> dict[str, str]:
+    normalized_symbol = str(symbol or '').upper()
+    inferred_swap = normalized_symbol.endswith('-SWAP')
+    resolved_product = str(product or ('swap' if inferred_swap else 'spot')).lower()
+    resolved_exchange = str(exchange or ('okx' if inferred_swap else 'simulated')).lower()
+    resolved_margin_mode = str(margin_mode or ('cross' if resolved_product == 'swap' else 'cash')).lower()
+    resolved_position_mode = str(position_mode or ('net' if resolved_product == 'swap' else 'long_short')).lower()
+    resolved_runtime_mode = str(runtime_mode or ('derivatives' if resolved_product == 'swap' else 'cash')).lower()
+    resolved_fidelity = str(fidelity or 'unknown').lower()
+    return {
+        'exchange': resolved_exchange,
+        'product': resolved_product,
+        'margin_mode': resolved_margin_mode,
+        'position_mode': resolved_position_mode,
+        'runtime_mode': resolved_runtime_mode,
+        'fidelity': resolved_fidelity,
+    }
+
+
 def _as_float(value: object, default: float = 0.0) -> float:
     try:
         return float(value)

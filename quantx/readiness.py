@@ -1,4 +1,4 @@
-"""Operational readiness checks for live rollout gates."""
+﻿"""Operational readiness checks for live rollout gates."""
 
 from __future__ import annotations
 
@@ -47,6 +47,10 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
     promotion_stage_ok = _promotion_stage_ready(ctx.promotion_gates or {})
     bootstrap_resume_mode_ok = _bootstrap_resume_mode_ready(runtime_status)
     requires_live_promotion_contract = _live_promotion_contract_required(ctx)
+    okx_contract_mode_ok = _okx_perp_contract_mode_ready(ctx, runtime_status)
+    okx_account_snapshot_present = _okx_account_snapshot_present(ctx, runtime_status)
+    okx_private_stream_fresh = _okx_private_stream_fresh(ctx, stream_status)
+    bootstrap_net_position_match_ok = bool(runtime_status.get('bootstrap_net_position_match', True))
 
     _append_check(
         checks,
@@ -132,6 +136,31 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
 
     _append_check(
         checks,
+        'okx_perp_contract_mode',
+        okx_contract_mode_ok,
+        'OKX unattended live requires SWAP + cross + net mode contract settings',
+    )
+    _append_check(
+        checks,
+        'okx_account_snapshot_present',
+        okx_account_snapshot_present,
+        'OKX unattended live requires a fresh account snapshot for margin evidence',
+    )
+    _append_check(
+        checks,
+        'okx_private_stream_fresh',
+        okx_private_stream_fresh,
+        'OKX unattended live requires a fresh private stream with no unresolved gap',
+    )
+    _append_check(
+        checks,
+        'bootstrap_net_position_match',
+        bootstrap_net_position_match_ok,
+        'bootstrap must confirm net positions match before unattended live is enabled',
+    )
+
+    _append_check(
+        checks,
         'live_truth_replay_persistence',
         bool(runtime_status.get('replay_persistence')),
         'runtime truth replay persistence must be available before live rollout',
@@ -172,6 +201,10 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         and bool(runtime_status.get('reconcile_ok', True))
         and (not bool(stream_status.get('stale')))
         and execution_mode in {'live', 'reduce_only'}
+        and okx_contract_mode_ok
+        and okx_account_snapshot_present
+        and okx_private_stream_fresh
+        and bootstrap_net_position_match_ok
         and promotion_stage_ok
         and bootstrap_resume_mode_ok,
         'micro-live requires promotion gates, bootstrap resume approval, alerts, OMS persistence, and healthy runtime truth state',
@@ -238,6 +271,32 @@ def _promotion_gate_check_ok(promotion_gates: dict[str, Any], check_name: str) -
 
 def _bootstrap_resume_mode_ready(runtime_status: dict[str, Any]) -> bool:
     return str(runtime_status.get('resume_mode', 'blocked')) in LIVE_BOOTSTRAP_RESUME_MODES
+
+
+def _okx_perp_contract_mode_ready(ctx: ReadinessContext, runtime_status: dict[str, Any]) -> bool:
+    if ctx.live_config.exchange != 'okx' or ctx.live_config.dry_run:
+        return True
+    contract_mode = runtime_status.get('contract_mode', {}) if isinstance(runtime_status.get('contract_mode'), dict) else {}
+    product_type = str(contract_mode.get('product_type', contract_mode.get('inst_type', ''))).lower()
+    margin_mode = str(contract_mode.get('margin_mode', '')).lower()
+    position_mode = str(contract_mode.get('position_mode', '')).lower()
+    return product_type == 'swap' and margin_mode == 'cross' and position_mode in {'net', 'net_mode'}
+
+
+def _okx_account_snapshot_present(ctx: ReadinessContext, runtime_status: dict[str, Any]) -> bool:
+    if ctx.live_config.exchange != 'okx' or ctx.live_config.dry_run:
+        return True
+    return bool(runtime_status.get('account_snapshot_present'))
+
+
+def _okx_private_stream_fresh(ctx: ReadinessContext, stream_status: dict[str, Any]) -> bool:
+    if ctx.live_config.exchange != 'okx' or ctx.live_config.dry_run:
+        return True
+    return (
+        not bool(stream_status.get('stale'))
+        and not bool(stream_status.get('gap_detected'))
+        and not bool(stream_status.get('reconcile_required'))
+    )
 
 
 def rollout_stage(ctx: ReadinessContext) -> str:

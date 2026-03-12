@@ -9,6 +9,7 @@ from typing import Any
 
 from .audit import JsonlAuditStore
 from .monitoring import summarize_replay_incidents
+from .reporting import build_venue_contract
 from .oms import JsonlOMSStore
 from .runtime.events import AccountEvent, FillEvent, MarketEvent
 from .runtime.models import OrderIntent
@@ -34,6 +35,9 @@ class DailyReplayReport:
     degrade_windows: list[dict[str, Any]]
     gate_recommendation: str
     operator_actions: list[str]
+    venue_contract: dict[str, Any]
+    runtime_mode: str
+    fidelity: str
     runtime_summary: dict[str, Any]
     paper_summary: dict[str, Any]
     drift_metrics: dict[str, Any]
@@ -360,6 +364,18 @@ def build_daily_replay_report(
 
     runtime_summary = _summarize_runtime_events(events)
     paper_summary = _rerun_paper_summary(events, runtime_summary)
+    symbol = ''
+    for ev in events:
+        symbol = str(ev.get('symbol', '')).upper().strip()
+        if symbol:
+            break
+    venue_contract = build_venue_contract(symbol=symbol, fidelity='high')
+    runtime_summary['venue_contract'] = venue_contract
+    runtime_summary['runtime_mode'] = venue_contract['runtime_mode']
+    runtime_summary['fidelity'] = venue_contract['fidelity']
+    paper_summary['venue_contract'] = venue_contract
+    paper_summary['runtime_mode'] = venue_contract['runtime_mode']
+    paper_summary['fidelity'] = venue_contract['fidelity']
     drift_metrics = _build_drift_metrics(runtime_summary, paper_summary)
     incident_review = summarize_replay_incidents(
         events,
@@ -385,6 +401,9 @@ def build_daily_replay_report(
         degrade_windows=incident_review['degrade_windows'],
         gate_recommendation=str(incident_review['gate_recommendation']),
         operator_actions=list(incident_review['operator_actions']),
+        venue_contract=venue_contract,
+        runtime_mode=str(venue_contract['runtime_mode']),
+        fidelity=str(venue_contract['fidelity']),
         runtime_summary=runtime_summary,
         paper_summary=paper_summary,
         drift_metrics=drift_metrics,

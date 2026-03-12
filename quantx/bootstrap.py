@@ -1,4 +1,4 @@
-"""Bootstrap helpers for safe restart takeover in live trading."""
+﻿"""Bootstrap helpers for safe restart takeover in live trading."""
 
 from __future__ import annotations
 
@@ -82,6 +82,15 @@ def _normalize_runtime_position_rows(rows: list[dict[str, Any]], qty_tolerance: 
     return _normalize_positions(normalized, qty_tolerance)
 
 
+def _okx_perp_contract_mode_ok(contract_mode: dict[str, Any]) -> bool:
+    if not contract_mode:
+        return False
+    product_type = str(contract_mode.get('product_type', contract_mode.get('inst_type', ''))).lower()
+    margin_mode = str(contract_mode.get('margin_mode', '')).lower()
+    position_mode = str(contract_mode.get('position_mode', '')).lower()
+    return product_type == 'swap' and margin_mode == 'cross' and position_mode in {'net', 'net_mode'}
+
+
 def _warm_runtime_snapshot(runtime_event_log_path: str | None, initial_cash: float) -> dict[str, Any] | None:
     if not runtime_event_log_path:
         return None
@@ -152,6 +161,9 @@ def bootstrap_recover_and_reconcile(
     recovery_mode = 'warm' if warm_snapshot is not None else 'cold'
 
     snapshot = service.reconcile(symbol)
+    contract_mode = snapshot.get('contract_mode', {}) if isinstance(snapshot.get('contract_mode'), dict) else {}
+    account_snapshot_present = bool(snapshot.get('account_snapshot'))
+    contract_mode_ok = _okx_perp_contract_mode_ok(contract_mode) if contract_mode else True
     service_runtime_snapshot_positions = snapshot.get('runtime_snapshot', {}).get('positions', {})
     if isinstance(service_runtime_snapshot_positions, dict) and service_runtime_snapshot_positions:
         exchange_positions = _normalize_runtime_snapshot_positions(service_runtime_snapshot_positions, qty_tolerance)
@@ -187,6 +199,10 @@ def bootstrap_recover_and_reconcile(
         notes.append('cold_recovery_degraded')
     if position_diffs:
         notes.append('position_mismatch_detected')
+    if contract_mode and not contract_mode_ok:
+        notes.append('account_mode_mismatch_detected')
+    if contract_mode and not account_snapshot_present:
+        notes.append('account_snapshot_missing')
     if missing_on_exchange:
         notes.append('local_working_orders_missing_on_exchange')
     if unmanaged_on_exchange:
@@ -203,9 +219,12 @@ def bootstrap_recover_and_reconcile(
     health.mark_replay_persistence(warm_snapshot is not None)
     health.mark_recovery_mode(recovery_mode)
     health.mark_resume_mode(resume_mode)
-    if position_diffs:
+    if position_diffs or (contract_mode and not contract_mode_ok) or (contract_mode and not account_snapshot_present):
         health.mark_reconcile({'ok': False, 'severity': 'block'})
     runtime_status = health.snapshot()
+    runtime_status['contract_mode'] = contract_mode
+    runtime_status['account_snapshot_present'] = account_snapshot_present
+    runtime_status['bootstrap_net_position_match'] = not bool(position_diffs)
     promotion_policy = _build_promotion_policy(
         recovery_mode=recovery_mode,
         resume_mode=resume_mode,

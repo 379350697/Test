@@ -1,4 +1,4 @@
-﻿"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
+"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .runtime.private_stream import PrivateStreamSupervisor
 from .runtime.session import RuntimeSession
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
-from .risk_engine import RiskLimits, pretrade_check
+from .risk_engine import RiskLimits, check_symbol_budget, pretrade_check
 from .system_log import EventLogger, LogCategory, LogEvent, LogLevel
 
 
@@ -55,6 +55,7 @@ class LiveExecutionService:
         self.trading_constraints = trading_constraints or TradingConstraints()
         self.config = config or LiveExecutionConfig()
         self.symbol_rules: dict[str, SymbolRule] = {}
+        self.symbol_budgets: dict[str, Any] = {}
         self.event_logger = event_logger
         self.runtime_adapter = runtime_adapter
         self.private_stream_transport = private_stream_transport
@@ -105,6 +106,9 @@ class LiveExecutionService:
         }
         self._log("system", "sync_symbol_rules", stage="bootstrap", payload={"count": len(self.symbol_rules)})
         return self.symbol_rules
+
+    def set_symbol_budgets(self, budgets: dict[str, Any]) -> None:
+        self.symbol_budgets = {str(symbol).upper(): budget for symbol, budget in budgets.items()}
 
     def build_rebalance_orders(
         self,
@@ -174,13 +178,28 @@ class LiveExecutionService:
                 rejected.append({"order": od, "reason": reason})
                 self._log("trade", "order_rejected", level="WARN", symbol=symbol, stage="rollout", payload={"reason": reason})
                 continue
-
             rule = self.symbol_rules.get(symbol)
             if rule:
                 valid, why = validate_order(price=price, qty=qty, rule=rule)
                 if not valid:
                     rejected.append({"order": od, "reason": why})
                     self._log("trade", "order_rejected", level="WARN", symbol=symbol, stage="validate", payload={"reason": why, "order": od})
+                    continue
+
+            metadata = od.get("metadata", {}) if isinstance(od.get("metadata", {}), dict) else {}
+            budget = self.symbol_budgets.get(symbol)
+            if budget is not None:
+                budget_ok, budget_reason = check_symbol_budget(
+                    requested_margin=float(metadata.get("required_margin", 0.0) or 0.0),
+                    requested_notional=abs(qty * price),
+                    requested_leverage=float(metadata.get("max_leverage", 0.0) or 0.0),
+                    max_margin=float(getattr(budget, "max_margin", 0.0) or 0.0),
+                    max_notional=float(getattr(budget, "max_notional", 0.0) or 0.0),
+                    max_leverage=float(getattr(budget, "max_leverage", 0.0) or 0.0),
+                )
+                if not budget_ok:
+                    rejected.append({"order": od, "reason": budget_reason})
+                    self._log("trade", "order_rejected", level="WARN", symbol=symbol, stage="budget", payload={"reason": budget_reason, "order": od})
                     continue
 
             client_order_id = self._client_order_id(symbol=symbol, idx=idx)
@@ -262,6 +281,8 @@ class LiveExecutionService:
 
     def reconcile(self, symbol: str | None = None) -> dict[str, Any]:
         runtime_events: list[dict[str, Any]] = []
+        account_snapshot: dict[str, Any] = {}
+        contract_mode: dict[str, Any] = {}
         if self.runtime_adapter is not None and hasattr(self.client, "get_raw_open_orders"):
             raw_open_orders = self.client.get_raw_open_orders(symbol)
             open_orders = self.runtime_adapter.normalize_open_orders(raw_open_orders)
@@ -282,12 +303,37 @@ class LiveExecutionService:
         else:
             positions = [{"symbol": p.symbol, "qty": p.qty} for p in self.client.get_account_positions()]
 
+        if self.runtime_adapter is not None and hasattr(self.client, 'get_raw_account_snapshot'):
+            raw_account_snapshot = self.client.get_raw_account_snapshot()
+            if isinstance(raw_account_snapshot, dict):
+                account_snapshot = raw_account_snapshot
+                details = raw_account_snapshot.get('details')
+                rows = details if isinstance(details, list) else [raw_account_snapshot]
+                for raw_row in rows:
+                    if not isinstance(raw_row, dict):
+                        continue
+                    row = dict(raw_row)
+                    if row.get('uTime') is None and raw_account_snapshot.get('uTime') is not None:
+                        row['uTime'] = raw_account_snapshot.get('uTime')
+                    if row.get('ts') is None and raw_account_snapshot.get('ts') is not None:
+                        row['ts'] = raw_account_snapshot.get('ts')
+                    runtime_event = self.runtime_adapter.normalize_account_event(row)
+                    runtime_events.append(asdict(runtime_event))
+                    self._apply_runtime_event(runtime_event)
+
+        if hasattr(self.client, 'validate_account_mode'):
+            raw_contract_mode = self.client.validate_account_mode()
+            if isinstance(raw_contract_mode, dict):
+                contract_mode = raw_contract_mode
+
         snapshot = {
             "open_orders": open_orders,
             "positions": positions,
             "runtime_positions": positions,
             "runtime_events": runtime_events,
             "runtime_snapshot": self.runtime_snapshot(),
+            "account_snapshot": account_snapshot,
+            "contract_mode": contract_mode,
             "symbol_rules": {
                 k: {
                     "tick_size": v.tick_size,
@@ -415,12 +461,3 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
-
-
-
-
-
-
-
-
-

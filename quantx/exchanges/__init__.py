@@ -1,8 +1,9 @@
-"""Exchange client implementations for live trading."""
+﻿"""Exchange client implementations for live trading."""
 
 from .base import ExchangeClient, ExchangeOrder, ExchangePosition, SymbolSpec
 from .binance import BinanceClient
 from .okx import OKXClient
+from .okx_perp_client import OKXPerpClient
 
 __all__ = [
     "ExchangeClient",
@@ -11,4 +12,5 @@ __all__ = [
     "SymbolSpec",
     "BinanceClient",
     "OKXClient",
+    "OKXPerpClient",
 ]

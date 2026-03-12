@@ -1,4 +1,4 @@
-# Personal Live Go/No-Go Checklist (QuantX)
+﻿# Personal Live Go/No-Go Checklist (QuantX)
 
 ## Goal
 Use the same machine-readable contract for backtest, paper soak, bootstrap takeover, and first live capital.
@@ -47,10 +47,16 @@ If bootstrap returns `resume_mode=blocked` or `resume_mode=read_only`, stay in p
 - Confirm the latest backtest and paper soak reports were generated from the same strategy/config you plan to trade.
 - Confirm `replay-daily` shows no blocking incidents and no recommendation to hold in paper.
 - Confirm bootstrap takeover produced no unresolved position or open-order mismatches.
+- Run `deploy --mode live` first and treat it as the go/no-go evidence contract, not the unattended runtime loop.
+- Start the unattended loop with `autotrade-start` only after the deploy evidence is green, then inspect `autotrade-status` for `supervisor.state`, `runtime.execution_mode`, and `venue_contract`.
+- If `autotrade-status` reports `reduce_only`, `read_only`, or `blocked`, hold live expansion and remediate before restarting.
 - Start with a small whitelist and capped notional even after all gates are green.
 
 ## Suggested Commands
 ```bash
 pytest -q
+quantx deploy --mode live --exchange okx --symbol BTC-USDT-SWAP --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
+quantx autotrade-start --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
+quantx autotrade-status --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
 quantx replay-daily --events runtime/events.jsonl --oms runtime/oms/events.jsonl --audit runtime/audit/events.jsonl --json
 ```

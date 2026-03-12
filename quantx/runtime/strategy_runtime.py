@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -72,6 +72,7 @@ class LegacySignalBarStrategyAdapter(BaseBarStrategy):
     legacy_strategy: BaseStrategy
     symbol: str
     strategy_id: str | None = None
+    live_position_mode: str = 'directional'
 
     def __post_init__(self) -> None:
         if self.strategy_id is None:
@@ -83,27 +84,23 @@ class LegacySignalBarStrategyAdapter(BaseBarStrategy):
             return []
 
         bar = bars[bar_index]
-        if signal > 0:
-            return [
-                OrderIntent(
-                    symbol=self.symbol,
-                    side='buy',
-                    position_side='long',
-                    qty=1.0,
-                    price=bar.close,
-                    order_type='market',
-                    time_in_force='ioc',
-                    reduce_only=False,
-                    reason=f'legacy_signal:{signal}',
-                    tags=('bar', 'legacy_signal'),
-                )
-            ]
+        side = 'buy' if signal > 0 else 'sell'
+        if self.live_position_mode == 'net':
+            position_side = 'net'
+        else:
+            position_side = 'long' if signal > 0 else 'short'
+
+        metadata = {
+            'strategy_name': str(getattr(self.legacy_strategy, 'name', self.strategy_id or 'legacy-bar')),
+            'watchlist_symbol': self.symbol,
+            **self.legacy_strategy.live_sizing_hints(self.symbol),
+        }
 
         return [
             OrderIntent(
                 symbol=self.symbol,
-                side='sell',
-                position_side='short',
+                side=side,
+                position_side=position_side,
                 qty=1.0,
                 price=bar.close,
                 order_type='market',
@@ -111,5 +108,6 @@ class LegacySignalBarStrategyAdapter(BaseBarStrategy):
                 reduce_only=False,
                 reason=f'legacy_signal:{signal}',
                 tags=('bar', 'legacy_signal'),
+                metadata=metadata,
             )
         ]

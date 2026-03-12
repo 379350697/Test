@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -11,7 +11,7 @@ from .models import BacktestConfig, BacktestResult, Position, RunMetadata, Trade
 from .analytics import evaluate_targets, extended_metrics
 from .indicator_cache import IndicatorCache
 from .repro import now_utc_iso, python_fingerprint, stable_hash
-from .reporting import build_promotion_summary
+from .reporting import build_promotion_summary, build_venue_contract
 from .strategies import get_strategy_class
 from .strategy_loader import load_strategy_repos
 from .runtime.events import FillEvent, MarketEvent, OrderEvent
@@ -272,6 +272,7 @@ def run_event_backtest(
 
     runtime_snapshot = enrich_runtime_snapshot(session.snapshot())
     runtime_snapshot['fidelity'] = 'high'
+    runtime_snapshot['venue_contract'] = build_venue_contract(symbol=config.symbol, fidelity='high')
 
     return BacktestResult(
         config,
@@ -667,6 +668,7 @@ def run_backtest(
     )
     runtime_snapshot = enrich_runtime_snapshot(runtime_session.snapshot())
     runtime_snapshot['fidelity'] = 'low'
+    runtime_snapshot['venue_contract'] = build_venue_contract(symbol=config.symbol, fidelity='low')
     return BacktestResult(
         config,
         metadata,
@@ -733,6 +735,15 @@ def result_to_dict(res: BacktestResult, mode: str = "full") -> dict:
         trade_count=len(res.trades),
         stability_score=float(res.score_total),
     )
+    venue_contract = dict(res.extra.get("runtime", {}).get("venue_contract", {}))
+    if not venue_contract:
+        venue_contract = build_venue_contract(
+            symbol=str(res.config.symbol),
+            fidelity=str(res.extra.get("runtime", {}).get("fidelity", "low")),
+        )
+    payload["venue_contract"] = venue_contract
+    payload["runtime_mode"] = str(venue_contract.get("runtime_mode", "cash"))
+    payload["fidelity"] = str(venue_contract.get("fidelity", "unknown"))
     if mode == "minimal":
         return payload
     if mode == "summary":
@@ -749,5 +760,3 @@ def result_to_dict(res: BacktestResult, mode: str = "full") -> dict:
         }
     )
     return payload
-
-

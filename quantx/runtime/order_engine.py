@@ -49,6 +49,7 @@ class OrderEngine:
             reason=intent.reason,
             created_ts=intent.created_ts,
             tags=intent.tags,
+            metadata=dict(intent.metadata),
         )
         self.orders[client_order_id] = order
         self._seen_trades[client_order_id] = set()

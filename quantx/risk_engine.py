@@ -1,4 +1,4 @@
-"""Pre-trade and portfolio risk checks (P1)."""
+﻿"""Pre-trade and portfolio risk checks (P1)."""
 
 from __future__ import annotations
 
@@ -117,4 +117,22 @@ def check_cross_margin_health(
         return False, 'available_margin_below_floor'
     if risk_ratio > max_risk_ratio + 1e-12:
         return False, 'risk_ratio_exceeded'
+    return True, 'ok'
+
+
+def check_symbol_budget(
+    *,
+    requested_margin: float,
+    requested_notional: float,
+    requested_leverage: float,
+    max_margin: float,
+    max_notional: float,
+    max_leverage: float,
+) -> tuple[bool, str]:
+    if requested_margin > max_margin + 1e-12:
+        return False, 'symbol_margin_budget_exceeded'
+    if requested_notional > max_notional + 1e-12:
+        return False, 'symbol_notional_budget_exceeded'
+    if requested_leverage > max_leverage + 1e-12:
+        return False, 'symbol_leverage_budget_exceeded'
     return True, 'ok'

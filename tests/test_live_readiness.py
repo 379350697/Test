@@ -22,6 +22,16 @@ def _router_with_webhook() -> AlertRouter:
     return router
 
 
+from pathlib import Path
+from uuid import uuid4
+
+
+def _workspace_tmp_dir(label: str) -> Path:
+    path = Path('writable_tmp_env_task2_readiness') / f'{label}-{uuid4().hex}'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _live_ready_promotion_gates(
     *,
     eligible_stage: str = 'live_ready',
@@ -346,7 +356,7 @@ def test_readiness_blocks_live_when_stream_is_stale_even_if_replay_persists(tmp_
         live_config=LiveExecutionConfig(dry_run=False, exchange='okx', runtime_mode='derivatives', allowed_symbols=('BTC-USDT-SWAP',), max_orders_per_cycle=1, max_notional_per_cycle=1000.0),
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
         alert_router=_router_with_webhook(),
-        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        oms_store=JsonlOMSStore(str(_workspace_tmp_dir('readiness-okx-cross-net') / 'oms' / 'events.jsonl')),
         runtime_status={
             'replay_persistence': True,
             'degraded': False,
@@ -388,7 +398,7 @@ def test_readiness_blocks_normal_live_when_runtime_truth_is_degraded_or_unrecove
     ctx = ReadinessContext(
         live_config=LiveExecutionConfig(
             dry_run=False,
-            allowed_symbols=("BTC-USDT-SWAP",),
+            allowed_symbols=("BTCUSDT",),
             max_orders_per_cycle=5,
             max_notional_per_cycle=50000.0,
             runtime_mode='derivatives',
@@ -420,7 +430,7 @@ def test_readiness_requires_backtest_paper_and_runtime_promotion_gates_before_li
         ),
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
         alert_router=_router_with_webhook(),
-        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        oms_store=JsonlOMSStore(str(_workspace_tmp_dir('readiness-okx-cross-net') / 'oms' / 'events.jsonl')),
         runtime_status={
             'replay_persistence': True,
             'degraded': False,
@@ -470,6 +480,9 @@ def test_readiness_evaluator_passes_when_all_gates_set(tmp_path):
             'execution_mode': 'live',
             'resume_mode': 'live',
             'recovery_mode': 'warm',
+            'contract_mode': {'product_type': 'swap', 'margin_mode': 'cross', 'position_mode': 'net'},
+            'account_snapshot_present': True,
+            'bootstrap_net_position_match': True,
         },
         promotion_gates=_live_ready_promotion_gates(),
     )
@@ -517,6 +530,9 @@ def test_readiness_assert_ready_and_blockers(tmp_path):
             'execution_mode': 'live',
             'resume_mode': 'live',
             'recovery_mode': 'warm',
+            'contract_mode': {'product_type': 'swap', 'margin_mode': 'cross', 'position_mode': 'net'},
+            'account_snapshot_present': True,
+            'bootstrap_net_position_match': True,
         },
         promotion_gates=_live_ready_promotion_gates(),
     )
@@ -853,3 +869,38 @@ def test_live_service_blocks_new_risk_until_reconcile_clears_after_stream_gap(tm
     ])
 
     assert blocked['ok'] is False
+
+def test_readiness_requires_okx_cross_net_mode_and_account_snapshot():
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=('BTC-USDT-SWAP',),
+            max_orders_per_cycle=1,
+            max_notional_per_cycle=1000.0,
+            runtime_mode='derivatives',
+            exchange='okx',
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
+        alert_router=_router_with_webhook(),
+        oms_store=JsonlOMSStore(str(_workspace_tmp_dir('readiness-okx-cross-net') / 'oms' / 'events.jsonl')),
+        runtime_status={
+            'replay_persistence': True,
+            'degraded': False,
+            'reconcile_ok': True,
+            'stream': {'stale': False, 'gap_detected': False, 'reconcile_required': False},
+            'execution_mode': 'live',
+            'resume_mode': 'live',
+            'recovery_mode': 'warm',
+            'contract_mode': {'product_type': 'swap', 'margin_mode': 'isolated', 'position_mode': 'long_short'},
+            'account_snapshot_present': False,
+            'bootstrap_net_position_match': False,
+        },
+        promotion_gates=_live_ready_promotion_gates(),
+    )
+
+    report = evaluate_readiness(ctx)
+    checks = {check['name']: check for check in report.checks}
+
+    assert checks['okx_perp_contract_mode']['ok'] is False
+    assert checks['okx_account_snapshot_present']['ok'] is False
+    assert checks['bootstrap_net_position_match']['ok'] is False

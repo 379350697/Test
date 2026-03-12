@@ -1,6 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -19,6 +20,7 @@ class OrderIntent:
     reason: str | None = None
     created_ts: str | None = None
     tags: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -41,6 +43,7 @@ class TrackedOrder:
     reason: str | None = None
     created_ts: str | None = None
     tags: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

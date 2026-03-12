@@ -86,3 +86,30 @@ def test_legacy_signal_strategy_adapts_to_bar_contract():
     assert intents[0].side == 'buy'
     assert intents[0].position_side == 'long'
     assert intents[0].symbol == 'SOLUSDT'
+
+class DummyEventStrategyWithMetadata(BaseEventStrategy):
+    strategy_id = 'dummy-event-metadata'
+
+    def on_event(self, ctx, event):
+        return [
+            OrderIntent(
+                symbol=event.symbol,
+                side='buy',
+                position_side='net',
+                qty=1.0,
+                price=event.payload['price'],
+                order_type='limit',
+                time_in_force='gtc',
+                reduce_only=False,
+                metadata={'strategy_name': 'dummy-event-metadata'},
+            )
+        ]
+
+
+def test_strategy_runtime_preserves_metadata_for_multi_symbol_net_intents():
+    runtime = StrategyRuntime(strategy=DummyEventStrategyWithMetadata())
+
+    intents = runtime.on_event(make_market_event(price=100.0))
+
+    assert intents[0].position_side == 'net'
+    assert intents[0].metadata['strategy_name'] == 'dummy-event-metadata'

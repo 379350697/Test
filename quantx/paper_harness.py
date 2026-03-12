@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from .reporting import build_venue_contract
 from .runtime.replay_store import RuntimeReplayStore
 
 
@@ -54,6 +55,12 @@ def run_paper_harness(*, event_log_path: str, duration_minutes: int = 60) -> dic
         and incident_counts['rejections'] == 0
         and incident_counts['invalid_event_lines'] == 0
     )
+    symbol = ''
+    for row in ordered_rows:
+        symbol = str(row.get('symbol', '')).upper().strip()
+        if symbol:
+            break
+    venue_contract = build_venue_contract(symbol=symbol, fidelity='high')
 
     return {
         'event_log_path': event_log_path,
@@ -66,6 +73,9 @@ def run_paper_harness(*, event_log_path: str, duration_minutes: int = 60) -> dic
             'degraded': not alerts_ok,
             'last_error': last_error,
         },
+        'venue_contract': venue_contract,
+        'runtime_mode': venue_contract['runtime_mode'],
+        'fidelity': venue_contract['fidelity'],
     }
 
 
