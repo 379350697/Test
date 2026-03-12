@@ -67,6 +67,7 @@ class LiveExecutionService:
         )
         self.runtime_session = self.runtime_coordinator.session
         self._consecutive_failures = 0
+        self._execution_mode_override: str | None = None
 
     def _log(
         self,
@@ -110,6 +111,12 @@ class LiveExecutionService:
     def set_symbol_budgets(self, budgets: dict[str, Any]) -> None:
         self.symbol_budgets = {str(symbol).upper(): budget for symbol, budget in budgets.items()}
 
+    def set_execution_mode(self, mode: str) -> None:
+        normalized = str(mode).lower()
+        if normalized not in {'live', 'reduce_only', 'read_only', 'blocked'}:
+            raise ValueError(f'unsupported_execution_mode:{mode}')
+        self._execution_mode_override = normalized
+
     def build_rebalance_orders(
         self,
         *,
@@ -140,10 +147,11 @@ class LiveExecutionService:
         runtime_events: list[dict[str, Any]] = []
 
         status = self.runtime_status()
-        if status.get("execution_mode") == "blocked":
+        execution_mode = str(status.get("execution_mode", "live"))
+        if execution_mode in {"blocked", "read_only"}:
             return {
                 "accepted": [],
-                "rejected": [{"reason": "runtime_truth_blocked"}],
+                "rejected": [{"reason": f"runtime_truth_{execution_mode}"}],
                 "runtime_events": [],
                 "runtime_snapshot": self.runtime_snapshot(),
                 "ok": False,
@@ -172,6 +180,13 @@ class LiveExecutionService:
             side = str(od["side"]).upper()
             qty = float(od["qty"])
             price = float(od["price"])
+            reduce_only = bool(od.get("reduce_only", False))
+
+            if execution_mode == "reduce_only" and not reduce_only:
+                reason = "runtime_truth_reduce_only"
+                rejected.append({"order": od, "reason": reason})
+                self._log("trade", "order_rejected", level="WARN", symbol=symbol, stage="execution_mode", payload={"reason": reason, "order": od})
+                continue
 
             if allowed is not None and symbol not in allowed:
                 reason = "symbol_not_allowed_in_rollout"
@@ -214,7 +229,7 @@ class LiveExecutionService:
                 price=price if price > 0 else None,
                 position_side=position_side,
                 margin_mode=margin_mode,
-                reduce_only=bool(od.get("reduce_only", False)),
+                reduce_only=reduce_only,
             )
 
             if self.config.dry_run:
@@ -354,7 +369,12 @@ class LiveExecutionService:
         return self.runtime_coordinator.snapshot()
 
     def runtime_status(self) -> dict[str, Any]:
-        return self.runtime_coordinator.status()
+        status = self.runtime_coordinator.status()
+        if self._execution_mode_override is not None:
+            status['execution_mode'] = self._execution_mode_override
+            if self._execution_mode_override in {'blocked', 'read_only', 'reduce_only'}:
+                status['degraded'] = True
+        return status
 
     def run_private_stream_once(self) -> int:
         if self.private_stream_transport is None:
@@ -461,3 +481,4 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
+

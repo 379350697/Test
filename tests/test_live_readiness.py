@@ -904,3 +904,15 @@ def test_readiness_requires_okx_cross_net_mode_and_account_snapshot():
     assert checks['okx_perp_contract_mode']['ok'] is False
     assert checks['okx_account_snapshot_present']['ok'] is False
     assert checks['bootstrap_net_position_match']['ok'] is False
+
+
+def test_live_execution_service_rejects_opening_orders_when_execution_mode_is_reduce_only():
+    service = LiveExecutionService(DummyExchange(), config=LiveExecutionConfig(dry_run=True))
+    service.set_execution_mode('reduce_only')
+
+    result = service.execute_orders([
+        {'symbol': 'BTC-USDT-SWAP', 'side': 'BUY', 'qty': 1.0, 'price': 100.0, 'reduce_only': False},
+    ])
+
+    assert result['ok'] is False
+    assert result['rejected'][0]['reason'] == 'runtime_truth_reduce_only'
