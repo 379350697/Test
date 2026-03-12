@@ -446,3 +446,30 @@ def test_backtest_runtime_payload_includes_parity_order_state_sequences():
     assert sequences
     assert sequences[0][0] == 'intent_created'
     assert sequences[0][-1] == 'filled'
+
+
+def test_deploy_and_execute_order_cli_route_through_runtime_core():
+    from quantx.cli import main
+
+    order_payload = main([
+        'execute-order',
+        '--json',
+        '--symbol', 'BTCUSDT',
+        '--side', 'BUY',
+        '--qty', '0.01',
+    ])
+    deploy_payload = main([
+        'deploy',
+        '--json',
+        '--symbol', 'BTCUSDT',
+    ])
+
+    assert order_payload['runtime']['execution_path'] == 'runtime_core'
+    assert order_payload['runtime']['rollout_exchange'] == 'okx'
+    assert order_payload['runtime']['adapter_contract'] == 'okx_perp'
+    assert order_payload['runtime']['order_state_sequences']
+
+    assert deploy_payload['runtime']['execution_path'] == 'runtime_core'
+    assert deploy_payload['runtime']['rollout_exchange'] == 'okx'
+    assert deploy_payload['readiness']['checks_by_name']['runtime_execution_path']['ok'] is True
+    assert deploy_payload['readiness']['checks_by_name']['rollout_exchange_order']['ok'] is True

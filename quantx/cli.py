@@ -1,9 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
 
 from .abtest import run_ab_test
+from .alerts import AlertRouter
 from .analytics import in_out_sample_split, monte_carlo_equity
 from .backtest import result_to_dict, run_backtest, run_parallel_matrix
 from .credentials import credential_presence_snapshot, load_binance_credentials, load_okx_credentials
@@ -18,17 +19,19 @@ from .data import (
 )
 from .exchange import fetch_binance_klines, write_ohlcv_csv
 from .execution import PaperLiveExecutor
+from .live_service import LiveExecutionConfig
 from .micro_backtest import run_orderbook_replay, run_tick_backtest
 from .ml_adapter import online_update, simple_sentiment
 from .models import BacktestConfig
 from .monitoring import analyze_logs, monitor_equity
 from .optimize import grid_search, random_scan, walk_forward
 from .radar import scan_watchlist
+from .readiness import ReadinessContext, evaluate_readiness
 from .replay import build_daily_replay_report
 from .reporting import write_report, write_report_payload
+from .risk_engine import RiskLimits
 from .strategies import list_strategies
 from .strategy_loader import load_strategy_repos
-
 
 def _print(payload: dict | list, as_json: bool):
     if as_json:
@@ -40,6 +43,43 @@ def _print(payload: dict | list, as_json: bool):
 def _attach_strategy_repo_args(cmd):
     cmd.add_argument("--strategy-repo", action="append", default=[], help="custom strategy file/dir path, can repeat")
 
+
+def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_binance: bool) -> dict[str, object]:
+    return {
+        'execution_path': 'runtime_core',
+        'runtime_mode': 'derivatives',
+        'rollout_exchange': exchange,
+        'adapter_contract': f'{exchange}_perp',
+        'rollout_gate': 'okx_first' if exchange == 'okx' or enable_binance else 'blocked_until_okx_rollout',
+        'order_state_sequences': executor.state.runtime.get('order_state_sequences', {}),
+    }
+
+
+def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance: bool) -> dict[str, object]:
+    router = AlertRouter()
+    router.register_webhook('ops', 'https://example.com/hook')
+    report = evaluate_readiness(
+        ReadinessContext(
+            live_config=LiveExecutionConfig(
+                dry_run=(mode != 'live'),
+                allowed_symbols=(symbol.upper(),),
+                max_orders_per_cycle=1,
+                max_notional_per_cycle=1000.0,
+                runtime_mode='derivatives',
+                exchange=exchange,
+                enable_binance=enable_binance,
+            ),
+            risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
+            alert_router=router,
+            oms_store=None,
+        )
+    )
+    return {
+        'ok': report.ok,
+        'score': report.score,
+        'checks': report.checks,
+        'checks_by_name': {check['name']: check for check in report.checks},
+    }
 
 def build_parser():
     p = argparse.ArgumentParser(prog="quantx")
@@ -132,6 +172,8 @@ def build_parser():
 
     ex = sub.add_parser("execute-order")
     ex.add_argument("--mode", choices=["paper", "live"], default="paper")
+    ex.add_argument("--exchange", choices=["okx", "binance"], default="okx")
+    ex.add_argument("--enable-binance", action="store_true")
     ex.add_argument("--symbol", default="BTCUSDT")
     ex.add_argument("--side", choices=["BUY", "SELL"], default="BUY")
     ex.add_argument("--qty", type=float, default=0.01)
@@ -143,7 +185,6 @@ def build_parser():
     ex.add_argument("--slices", type=int, default=5)
     ex.add_argument("--broker-quotes", default="{}", help='json dict broker->price')
     ex.add_argument("--json", action="store_true")
-
     mon = sub.add_parser("monitor")
     mon.add_argument("--report-json", required=True)
     mon.add_argument("--dd-alert", type=float, default=10.0)
@@ -214,6 +255,8 @@ def build_parser():
 
     x = sub.add_parser("deploy")
     x.add_argument("--mode", choices=["paper", "live"], default="paper")
+    x.add_argument("--exchange", choices=["okx", "binance"], default="okx")
+    x.add_argument("--enable-binance", action="store_true")
     x.add_argument("--symbol", default="BTCUSDT")
     x.add_argument("--json", action="store_true")
     return p
@@ -302,8 +345,13 @@ def main(argv=None):
             broker_quotes=json.loads(args.broker_quotes),
             position_side=args.position_side,
         )
-        _print({"order": rec, "state": ex.state.__dict__}, args.json)
-        return
+        payload = {
+            "order": rec,
+            "state": ex.state.__dict__,
+            "runtime": _runtime_cli_metadata(ex, exchange=args.exchange, enable_binance=args.enable_binance),
+        }
+        _print(payload, args.json)
+        return payload
     if args.cmd == "monitor":
         payload = json.loads(open(args.report_json, "r", encoding="utf-8").read())
         _print(monitor_equity(payload.get("equity_curve", []), dd_alert_pct=args.dd_alert), args.json)
@@ -389,11 +437,29 @@ def main(argv=None):
     if args.cmd == "deploy":
         ex = PaperLiveExecutor(args.mode)
         ex.arm()
-        probe = ex.place_order(args.symbol, "BUY", 0.01)
+        probe = ex.place_order(args.symbol, "BUY", 0.01, position_side="long")
         close = ex.close_all()
-        _print({"probe_order": probe, "close_all": close, "state": ex.state.__dict__}, args.json)
-        return
-
+        payload = {
+            "probe_order": probe,
+            "close_all": close,
+            "state": ex.state.__dict__,
+            "runtime": _runtime_cli_metadata(ex, exchange=args.exchange, enable_binance=args.enable_binance),
+            "readiness": _readiness_preview(
+                args.symbol,
+                mode=args.mode,
+                exchange=args.exchange,
+                enable_binance=args.enable_binance,
+            ),
+        }
+        _print(payload, args.json)
+        return payload
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+

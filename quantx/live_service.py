@@ -1,4 +1,4 @@
-"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
+﻿"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,9 @@ class LiveExecutionConfig:
     max_notional_per_cycle: float | None = None
     max_consecutive_failures: int | None = 5
     auto_switch_to_dry_run_on_failures: bool = True
-
+    runtime_mode: str = "derivatives"
+    exchange: str = "okx"
+    enable_binance: bool = False
 
 class LiveExecutionService:
     """Production-style execution adapter with retries and reconciliation."""
@@ -283,3 +285,4 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import urllib.error
@@ -459,3 +459,48 @@ def test_live_execution_service_reconcile_uses_okx_runtime_adapter():
     assert snap['positions'][0]['position_side'] == 'long'
     assert snap['open_orders'][0]['clientOrderId'] == 'cid-1'
     assert snap['runtime_events'][0]['kind'] == 'order_event'
+
+
+def test_deploy_readiness_prefers_okx_before_binance():
+    router = AlertRouter()
+    router.register_webhook('ops', 'https://example.com/hook')
+    store = JsonlOMSStore('tests/fixtures/runtime_replay_events.jsonl')
+
+    okx_ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=('BTC-USDT-SWAP',),
+            max_orders_per_cycle=5,
+            max_notional_per_cycle=50000.0,
+            runtime_mode='derivatives',
+            exchange='okx',
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
+        alert_router=router,
+        oms_store=store,
+    )
+    okx_report = evaluate_readiness(okx_ctx)
+    okx_checks = {check['name']: check for check in okx_report.checks}
+
+    assert okx_checks['runtime_execution_path']['ok'] is True
+    assert okx_checks['rollout_exchange_order']['ok'] is True
+
+    binance_ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=False,
+            allowed_symbols=('BTCUSDT',),
+            max_orders_per_cycle=5,
+            max_notional_per_cycle=50000.0,
+            runtime_mode='derivatives',
+            exchange='binance',
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=10000.0),
+        alert_router=router,
+        oms_store=store,
+    )
+    binance_report = evaluate_readiness(binance_ctx)
+    binance_checks = {check['name']: check for check in binance_report.checks}
+
+    assert binance_checks['runtime_execution_path']['ok'] is True
+    assert binance_checks['rollout_exchange_order']['ok'] is False
+
