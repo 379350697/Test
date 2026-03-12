@@ -9,6 +9,8 @@ from typing import Any
 
 from .error_codes import QX_EXEC_AUTO_DEGRADED, QX_EXEC_CYCLE_LIMIT, QX_EXEC_PLACE_ORDER_EMPTY, with_code
 from .exchange_rules import SymbolRule, validate_order
+from .runtime.models import OrderIntent
+from .runtime.session import RuntimeSession
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
 from .risk_engine import RiskLimits, pretrade_check
@@ -50,6 +52,7 @@ class LiveExecutionService:
         self.symbol_rules: dict[str, SymbolRule] = {}
         self.event_logger = event_logger
         self.runtime_adapter = runtime_adapter
+        self.runtime_session = RuntimeSession(mode='live', wallet_balance=0.0)
         self._consecutive_failures = 0
 
     def _log(
@@ -124,7 +127,7 @@ class LiveExecutionService:
         if self.config.max_orders_per_cycle is not None and len(orders) > self.config.max_orders_per_cycle:
             reason = with_code(QX_EXEC_CYCLE_LIMIT, "max_orders_per_cycle_exceeded")
             self._log("system", "cycle_blocked", level="WARN", stage="execute", payload={"reason": reason, "orders": len(orders)})
-            return {"accepted": [], "rejected": [{"reason": reason, "orders": len(orders)}], "ok": False}
+            return {"accepted": [], "rejected": [{"reason": reason, "orders": len(orders)}], "ok": False, "runtime_snapshot": self.runtime_snapshot()}
 
         if self.config.max_notional_per_cycle is not None and total_notional > self.config.max_notional_per_cycle + 1e-12:
             reason = with_code(QX_EXEC_CYCLE_LIMIT, "max_notional_per_cycle_exceeded")
@@ -135,7 +138,7 @@ class LiveExecutionService:
                 stage="execute",
                 payload={"reason": reason, "notional": total_notional},
             )
-            return {"accepted": [], "rejected": [{"reason": reason, "notional": total_notional}], "ok": False}
+            return {"accepted": [], "rejected": [{"reason": reason, "notional": total_notional}], "ok": False, "runtime_snapshot": self.runtime_snapshot()}
 
         allowed = {s.upper() for s in self.config.allowed_symbols} if self.config.allowed_symbols else None
 
@@ -181,10 +184,14 @@ class LiveExecutionService:
                 continue
 
             try:
+                ts = datetime.now(tz=timezone.utc).isoformat()
                 res = self._place_with_retry(order)
                 accepted.append({"order": od, "result": res})
                 if self.runtime_adapter is not None:
-                    runtime_events.append(asdict(self.runtime_adapter.normalize_place_order_response(order, res, ts=datetime.now(tz=timezone.utc).isoformat())))
+                    self.runtime_session.submit_intents([self._runtime_intent(order, ts=ts)], exchange=self.config.exchange, ts=ts)
+                    runtime_event = self.runtime_adapter.normalize_place_order_response(order, res, ts=ts)
+                    runtime_events.append(asdict(runtime_event))
+                    self._apply_runtime_event(runtime_event)
                 self._consecutive_failures = 0
                 self._log("trade", "order_accepted", symbol=symbol, client_order_id=client_order_id, stage="execute", payload={"dry_run": False, "exchange": type(self.client).__name__, "result": res})
             except Exception as exc:  # noqa: BLE001
@@ -230,21 +237,27 @@ class LiveExecutionService:
                         },
                     )
 
-        return {"accepted": accepted, "rejected": rejected, "runtime_events": runtime_events, "ok": len(rejected) == 0}
+        return {"accepted": accepted, "rejected": rejected, "runtime_events": runtime_events, "runtime_snapshot": self.runtime_snapshot(), "ok": len(rejected) == 0}
 
     def reconcile(self, symbol: str | None = None) -> dict[str, Any]:
         runtime_events: list[dict[str, Any]] = []
         if self.runtime_adapter is not None and hasattr(self.client, "get_raw_open_orders"):
             raw_open_orders = self.client.get_raw_open_orders(symbol)
             open_orders = self.runtime_adapter.normalize_open_orders(raw_open_orders)
-            runtime_events.extend(asdict(self.runtime_adapter.normalize_order_event(row)) for row in raw_open_orders)
+            for row in raw_open_orders:
+                runtime_event = self.runtime_adapter.normalize_order_event(row)
+                runtime_events.append(asdict(runtime_event))
+                self._apply_runtime_event(runtime_event)
         else:
             open_orders = self.client.get_open_orders(symbol)
 
         if self.runtime_adapter is not None and hasattr(self.client, "get_raw_account_positions"):
             raw_positions = self.client.get_raw_account_positions(symbol)
             positions = self.runtime_adapter.normalize_positions(raw_positions)
-            runtime_events.extend(asdict(self.runtime_adapter.normalize_position_event(row)) for row in raw_positions)
+            for row in raw_positions:
+                runtime_event = self.runtime_adapter.normalize_position_event(row)
+                runtime_events.append(asdict(runtime_event))
+                self._apply_runtime_event(runtime_event)
         else:
             positions = [{"symbol": p.symbol, "qty": p.qty} for p in self.client.get_account_positions()]
 
@@ -253,6 +266,7 @@ class LiveExecutionService:
             "positions": positions,
             "runtime_positions": positions,
             "runtime_events": runtime_events,
+            "runtime_snapshot": self.runtime_snapshot(),
             "symbol_rules": {
                 k: {
                     "tick_size": v.tick_size,
@@ -265,6 +279,32 @@ class LiveExecutionService:
         }
         self._log("system", "reconcile", stage="reconcile", payload={"open_orders": len(snapshot["open_orders"]), "positions": len(snapshot["positions"])})
         return snapshot
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        return self.runtime_session.snapshot()
+
+    def _runtime_intent(self, order: ExchangeOrder, *, ts: str) -> OrderIntent:
+        return OrderIntent(
+            symbol=order.symbol,
+            side=order.side.lower(),
+            position_side=(order.position_side or 'long').lower(),
+            qty=order.qty,
+            price=order.price,
+            order_type=(order.order_type or 'MARKET').lower(),
+            time_in_force='gtc' if order.price is not None else 'ioc',
+            reduce_only=order.reduce_only,
+            intent_id=order.client_order_id,
+            strategy_id='live_execution',
+            reason='live_execute',
+            created_ts=ts,
+            tags=('live', 'runtime'),
+        )
+
+    def _apply_runtime_event(self, event: Any) -> None:
+        try:
+            self.runtime_session.apply_events([event])
+        except Exception:
+            return
 
     def _place_with_retry(self, order: ExchangeOrder) -> dict[str, Any]:
         last_err: Exception | None = None

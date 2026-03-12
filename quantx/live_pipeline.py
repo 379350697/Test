@@ -174,4 +174,5 @@ def run_live_rebalance_cycle(
     execution = service.execute_orders(plan.get("orders", []))
     snapshot = service.reconcile()
     runtime_events = list(execution.get("runtime_events", [])) + list(snapshot.get("runtime_events", []))
-    return {"ok": execution.get("ok", False), "plan": plan, "execution": execution, "snapshot": snapshot, "runtime_events": runtime_events}
+    runtime_snapshot = snapshot.get("runtime_snapshot") or execution.get("runtime_snapshot") or {}
+    return {"ok": execution.get("ok", False), "plan": plan, "execution": execution, "snapshot": snapshot, "runtime_events": runtime_events, "runtime_snapshot": runtime_snapshot}

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import urllib.error
@@ -459,6 +459,25 @@ def test_live_execution_service_reconcile_uses_okx_runtime_adapter():
     assert snap['positions'][0]['position_side'] == 'long'
     assert snap['open_orders'][0]['clientOrderId'] == 'cid-1'
     assert snap['runtime_events'][0]['kind'] == 'order_event'
+
+
+def test_live_execution_service_updates_runtime_snapshot_from_adapter_events():
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    ex = _DummyOKXPerpExchange()
+    svc = LiveExecutionService(
+        ex,
+        config=LiveExecutionConfig(dry_run=False, max_retries=1, retry_backoff_ms=1),
+        runtime_adapter=OKXPerpAdapter(),
+    )
+    svc.sync_symbol_rules(['BTCUSDT'])
+
+    result = svc.execute_orders([
+        {'symbol': 'BTCUSDT', 'side': 'BUY', 'qty': 0.01, 'price': 100000.0, 'position_side': 'long'}
+    ])
+
+    assert result['runtime_snapshot']['orders']
+    assert result['runtime_snapshot']['orders'][0]['status'] in {'acked', 'working', 'filled'}
 
 
 def test_deploy_readiness_prefers_okx_before_binance():
