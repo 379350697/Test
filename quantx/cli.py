@@ -693,6 +693,85 @@ def _build_autotrade_status_payload(args) -> dict[str, object]:
     return payload
 
 
+
+def _pid_is_alive(pid: int) -> bool:
+    import os
+
+    if int(pid or 0) <= 0:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _autotrade_healthcheck_status_path(args) -> Path:
+    if getattr(args, 'status_path', ''):
+        return Path(str(args.status_path))
+    if getattr(args, 'config', ''):
+        config = _load_report_payload(str(args.config))
+        raw_status_path = str(config.get('status_path', '') or '')
+        if raw_status_path:
+            return Path(raw_status_path)
+    raise ValueError('autotrade_healthcheck_requires_status_path')
+
+
+def _autotrade_healthcheck_channels(webhooks: list[str]) -> list[str]:
+    return ['ops' if idx == 0 else f'ops_{idx + 1}' for idx, _ in enumerate(webhooks)]
+
+
+def _build_autotrade_healthcheck_payload(args) -> dict[str, object]:
+    from datetime import datetime, timezone
+
+    from .alerts import AlertMessage
+    from .live_runtime_store import LiveRuntimeStore
+    from .live_watchdog import evaluate_live_watchdog
+
+    status_path = _autotrade_healthcheck_status_path(args)
+    stored = LiveRuntimeStore(status_path).read_status()
+    process = stored.get('process', {}) if isinstance(stored.get('process'), dict) else {}
+    pid = int(process.get('pid', 0) or 0)
+    result = evaluate_live_watchdog(
+        status_payload=stored,
+        process_alive=_pid_is_alive(pid),
+        now=datetime.now(timezone.utc),
+        stale_after_s=int(args.stale_after_seconds),
+    )
+
+    alerts: list[dict[str, object]] = []
+    webhooks = list(getattr(args, 'alert_webhook', []) or [])
+    if result.should_alert and webhooks:
+        router = _build_alert_router(webhooks)
+        message = AlertMessage(
+            level='ERROR' if result.status == 'blocked' else 'WARN',
+            title=f'autotrade healthcheck {result.reason}',
+            body=json.dumps(
+                {
+                    'status': result.status,
+                    'reason': result.reason,
+                    'detail': result.detail,
+                    'status_path': str(status_path),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        for channel in _autotrade_healthcheck_channels(webhooks):
+            alerts.append(router.send(channel, message))
+
+    return {
+        'ok': result.ok,
+        'status': result.status,
+        'reason': result.reason,
+        'detail': result.detail,
+        'alerts': alerts,
+        'status_path': str(status_path),
+    }
+
+
 def _run_autotrade_runtime(args) -> dict[str, object]:
     from .exchanges.okx_private_stream import OKXPrivateStreamTransport
     from .live_market_driver import OKXKlineMarketDriver
@@ -978,6 +1057,12 @@ def build_parser():
     ast.add_argument("--max-leverage", type=float, default=1.0)
     _attach_strategy_repo_args(ast)
     ast.add_argument("--json", action="store_true")
+    ah = sub.add_parser("autotrade-healthcheck")
+    ah.add_argument("--config", default="")
+    ah.add_argument("--status-path", default="")
+    ah.add_argument("--stale-after-seconds", type=int, default=60)
+    ah.add_argument("--alert-webhook", action="append", default=[])
+    ah.add_argument("--json", action="store_true")
     atr = sub.add_parser("autotrade-run")
     atr.add_argument("--config", required=True)
     atr.add_argument("--json", action="store_true")
@@ -1174,6 +1259,12 @@ def main(argv=None):
         _print(payload, args.json)
         return payload
 
+    if args.cmd == "autotrade-healthcheck":
+        payload = _build_autotrade_healthcheck_payload(args)
+        _print(payload, args.json)
+        if argv is None and not payload.get('ok', False):
+            raise SystemExit(1)
+        return payload
     if args.cmd == "autotrade-run":
         payload = _run_autotrade_runtime(args)
         _print(payload, args.json)

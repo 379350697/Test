@@ -937,3 +937,45 @@ def test_autotrade_start_spawns_runtime_process_and_status_reads_runtime_store(m
     assert start['process']['pid'] == 4242
     assert status['supervisor']['state'] in {'warming', 'live_active', 'reduce_only'}
     assert status['runtime']['execution_path'] == 'runtime_core'
+
+def test_autotrade_healthcheck_reports_blocked_for_stale_status_and_emits_alert(tmp_path, monkeypatch):
+    import quantx.cli as cli
+    from quantx.live_runtime_store import LiveRuntimeStore
+
+    status_path = tmp_path / 'autotrade' / 'status.json'
+    LiveRuntimeStore(status_path).write_status({
+        'process': {'pid': 4242, 'started_at': '2026-03-12T00:00:00+00:00'},
+        'runtime': {'updated_at': '2026-03-12T00:00:00+00:00', 'execution_mode': 'live'},
+        'supervisor': {'state': 'live_active'},
+    })
+
+    sent: list[dict[str, object]] = []
+
+    class _Router:
+        def send(self, channel, message):
+            rec = {
+                'channel': channel,
+                'level': message.level,
+                'title': message.title,
+                'body': message.body,
+                'delivery': 'sent',
+            }
+            sent.append(rec)
+            return rec
+
+    monkeypatch.setattr(cli, '_pid_is_alive', lambda pid: False)
+    monkeypatch.setattr(cli, '_build_alert_router', lambda webhooks: _Router())
+
+    payload = cli.main([
+        'autotrade-healthcheck',
+        '--config', str(tmp_path / 'autotrade' / 'runtime_config.json'),
+        '--status-path', str(status_path),
+        '--stale-after-seconds', '60',
+        '--alert-webhook', 'https://example.com/hook',
+        '--json',
+    ])
+
+    assert payload['ok'] is False
+    assert payload['status'] == 'blocked'
+    assert payload['reason'] == 'process_dead'
+    assert sent[0]['delivery'] == 'sent'
