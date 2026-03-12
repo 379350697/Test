@@ -58,3 +58,16 @@ def test_paper_exchange_snapshot_tracks_runtime_ledger_and_positions():
     assert snapshot['mode'] == 'paper'
     assert snapshot['orders'][0]['status'] == 'filled'
     assert snapshot['positions']['BTCUSDT']['long']['qty'] == 1.0
+
+
+
+def test_paper_exchange_snapshot_exposes_continuity_signals_for_soak_review():
+    exchange = PaperExchangeSimulator(initial_cash=1000.0, config=PaperExchangeConfig())
+
+    exchange.submit_intents([make_buy_intent()], exchange_name='paper', ts='2026-03-12T00:00:00+00:00')
+    exchange.on_market_event(make_market_event(price=100.0, ts='2026-03-12T00:00:01+00:00'))
+    snapshot = exchange.snapshot()
+
+    assert snapshot['health']['degraded'] is False
+    assert snapshot['position_invariants']['open_position_count'] == 1
+    assert snapshot['ledger_invariants']['used_margin_non_negative'] is True

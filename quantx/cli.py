@@ -24,6 +24,7 @@ from .micro_backtest import run_orderbook_replay, run_tick_backtest
 from .ml_adapter import online_update, simple_sentiment
 from .models import BacktestConfig
 from .monitoring import analyze_logs, monitor_equity
+from .paper_harness import run_paper_harness
 from .optimize import grid_search, random_scan, walk_forward
 from .radar import scan_watchlist
 from .readiness import ReadinessContext, evaluate_readiness, rollout_stage
@@ -284,6 +285,11 @@ def build_parser():
     r.add_argument("--json", action="store_true")
 
 
+    ph = sub.add_parser("paper-harness")
+    ph.add_argument("--event-log-path", required=True)
+    ph.add_argument("--duration-minutes", type=int, default=60)
+    ph.add_argument("--json", action="store_true")
+
     rp = sub.add_parser("replay-daily")
     rp.add_argument("--events", required=True, help="jsonl event log path")
     rp.add_argument("--oms", default="", help="optional oms jsonl store path")
@@ -449,6 +455,14 @@ def main(argv=None):
         cfg = BacktestConfig(symbol="BTCUSDT", timeframe="1h")
         _print({"opportunities": scan_watchlist(watchlist, args.strategy, json.loads(args.params), cfg), "custom_loaded": load_info}, args.json)
         return
+
+    if args.cmd == "paper-harness":
+        payload = run_paper_harness(
+            event_log_path=args.event_log_path,
+            duration_minutes=args.duration_minutes,
+        )
+        _print(payload, True if args.json else False)
+        return payload
 
     if args.cmd == "replay-daily":
         payload = build_daily_replay_report(
