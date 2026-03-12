@@ -13,6 +13,12 @@ class OrderIntent:
     order_type: str
     time_in_force: str
     reduce_only: bool = False
+    intent_id: str | None = None
+    strategy_id: str | None = None
+    signal_id: str | None = None
+    reason: str | None = None
+    created_ts: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -29,6 +35,12 @@ class TrackedOrder:
     exchange_order_id: str | None = None
     price: float | None = None
     filled_qty: float = 0.0
+    intent_id: str | None = None
+    strategy_id: str | None = None
+    signal_id: str | None = None
+    reason: str | None = None
+    created_ts: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

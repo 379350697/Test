@@ -93,6 +93,42 @@ def test_model_order_intent_captures_derivatives_order_shape():
     assert intent.order_type == 'limit'
 
 
+def test_model_order_intent_carries_strategy_trace_metadata():
+    intent = OrderIntent(
+        symbol='BTC-USDT-SWAP',
+        side='buy',
+        position_side='long',
+        qty=1.0,
+        price=100000.0,
+        order_type='limit',
+        time_in_force='gtc',
+        reduce_only=False,
+        intent_id='intent-1',
+        strategy_id='scalp-v1',
+        signal_id='sig-1',
+        reason='breakout_retest',
+        created_ts='2026-03-12T00:00:00+00:00',
+        tags=('scalp', 'event'),
+    )
+    tracked = TrackedOrder(
+        client_order_id='cid-1',
+        symbol='BTC-USDT-SWAP',
+        side='buy',
+        position_side='long',
+        qty=1.0,
+        order_type='limit',
+        time_in_force='gtc',
+        strategy_id='scalp-v1',
+        intent_id='intent-1',
+    )
+
+    assert intent.strategy_id == 'scalp-v1'
+    assert intent.intent_id == 'intent-1'
+    assert intent.tags == ('scalp', 'event')
+    assert tracked.strategy_id == 'scalp-v1'
+    assert tracked.intent_id == 'intent-1'
+
+
 def test_model_position_leg_uses_symbol_and_position_side_key():
     leg = PositionLeg(symbol='BTC-USDT-SWAP', position_side='short')
 
