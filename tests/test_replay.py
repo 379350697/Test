@@ -116,3 +116,17 @@ def test_build_daily_replay_report_includes_runtime_parity_drift_metrics():
     assert rep['runtime_summary']['order_state_sequences']['cid-1'] == ['acked', 'filled']
     assert rep['drift_metrics']['paper_vs_live']['order_state_match_rate'] == 1.0
     assert rep['drift_metrics']['paper_vs_live']['equity_drift'] == 0.0
+
+
+def test_build_daily_replay_report_reruns_paper_on_market_tape():
+    fixture = Path(__file__).with_name('fixtures') / 'runtime_market_tape.jsonl'
+
+    rep = build_daily_replay_report(
+        event_log_path=str(fixture),
+        day='2026-03-12',
+    )
+
+    assert rep['runtime_summary']['mode'] == 'live_replay'
+    assert rep['paper_summary']['mode'] == 'paper_replay'
+    assert 'paper_vs_live' in rep['drift_metrics']
+    assert rep['paper_summary'] != rep['runtime_summary']

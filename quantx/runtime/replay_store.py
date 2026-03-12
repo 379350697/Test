@@ -37,6 +37,15 @@ class RuntimeReplayStore:
                     invalid += 1
         return rows, invalid
 
+    @staticmethod
+    def market_tape(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [row for row in rows if str(row.get('kind', '')) == 'market_event']
+
+    @staticmethod
+    def execution_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        allowed = {'order_event', 'fill_event', 'account_event'}
+        return [row for row in rows if str(row.get('kind', '')) in allowed]
+
     def _serialize_event(self, event: Any) -> dict[str, Any]:
         if is_dataclass(event):
             payload = asdict(event)

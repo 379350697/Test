@@ -1,0 +1,6 @@
+{"kind":"market_event","symbol":"BTC-USDT-SWAP","exchange":"okx","channel":"mark_price","ts":"2026-03-12T00:00:00+00:00","payload":{"price":101.0}}
+{"kind":"market_event","symbol":"BTC-USDT-SWAP","exchange":"okx","channel":"mark_price","ts":"2026-03-12T00:00:01+00:00","payload":{"price":100.0}}
+{"kind":"order_event","symbol":"BTC-USDT-SWAP","exchange":"okx","ts":"2026-03-12T00:00:01+00:00","client_order_id":"cid-1","exchange_order_id":"oid-1","status":"acked","payload":{"phase":"accept"}}
+{"kind":"fill_event","symbol":"BTC-USDT-SWAP","exchange":"okx","ts":"2026-03-12T00:00:01+00:00","client_order_id":"cid-1","exchange_order_id":"oid-1","trade_id":"tid-1","side":"buy","position_side":"long","qty":1.0,"price":100.0,"fee":0.1,"payload":{"liquidity":"maker"}}
+{"kind":"market_event","symbol":"BTC-USDT-SWAP","exchange":"okx","channel":"mark_price","ts":"2026-03-12T00:00:02+00:00","payload":{"price":102.0}}
+{"kind":"account_event","exchange":"okx","ts":"2026-03-12T08:00:00+00:00","event_type":"funding","payload":{"symbol":"BTC-USDT-SWAP","position_side":"long","amount":-0.2}}

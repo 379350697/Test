@@ -10,6 +10,8 @@ from typing import Any
 from .audit import JsonlAuditStore
 from .oms import JsonlOMSStore
 from .runtime.events import AccountEvent, FillEvent, MarketEvent
+from .runtime.models import OrderIntent
+from .runtime.paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
 from .runtime.ledger_engine import LedgerEngine
 from .runtime.replay_store import RuntimeReplayStore
 
@@ -28,6 +30,7 @@ class DailyReplayReport:
     audit_events: int
     invalid_event_lines: int
     runtime_summary: dict[str, Any]
+    paper_summary: dict[str, Any]
     drift_metrics: dict[str, Any]
 
 
@@ -43,6 +46,127 @@ def _append_sequence_state(sequences: dict[str, list[str]], client_order_id: str
     sequence = sequences.setdefault(client_order_id, [])
     if not sequence or sequence[-1] != status:
         sequence.append(status)
+
+
+def _event_dt(ts: str) -> datetime:
+    try:
+        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    except ValueError:
+        return datetime.min
+
+
+def _is_reduce_only(position_side: str, side: str) -> bool:
+    return (position_side == 'long' and side == 'sell') or (position_side == 'short' and side == 'buy')
+
+
+def _market_event_from_row(row: dict[str, Any]) -> MarketEvent:
+    payload = row.get('payload', {}) if isinstance(row.get('payload'), dict) else {}
+    return MarketEvent(
+        symbol=str(row.get('symbol', '')).upper(),
+        exchange=str(row.get('exchange', 'replay')),
+        channel=str(row.get('channel', 'market')),
+        ts=str(row.get('ts', '')),
+        payload={'price': float(payload.get('price', 0.0) or 0.0)},
+    )
+
+
+def _rerun_paper_summary(events: list[dict[str, Any]], live_summary: dict[str, Any]) -> dict[str, Any]:
+    market_rows = RuntimeReplayStore.market_tape(events)
+    if not market_rows:
+        paper_summary = dict(live_summary)
+        paper_summary['mode'] = 'paper_replay'
+        return paper_summary
+
+    simulator = PaperExchangeSimulator(initial_cash=0.0, config=PaperExchangeConfig(mode='paper_replay'))
+    fill_prices: list[float] = []
+    funding_total = 0.0
+    seen_order_ids: set[str] = set()
+    replay_intents: list[tuple[datetime, str, OrderIntent]] = []
+    funding_events: list[AccountEvent] = []
+
+    for ev in RuntimeReplayStore.execution_events(events):
+        kind = str(ev.get('kind', ''))
+        if kind == 'fill_event':
+            client_order_id = str(ev.get('client_order_id', ''))
+            if client_order_id in seen_order_ids:
+                continue
+            seen_order_ids.add(client_order_id)
+            side = str(ev.get('side', '')).lower()
+            position_side = str(ev.get('position_side', 'long')).lower()
+            ts = str(ev.get('ts', ''))
+            replay_intents.append((
+                _event_dt(ts),
+                ts,
+                OrderIntent(
+                    symbol=str(ev.get('symbol', '')).upper(),
+                    side=side,
+                    position_side=position_side,
+                    qty=float(ev.get('qty', 0.0) or 0.0),
+                    price=float(ev.get('price', 0.0) or 0.0),
+                    order_type='market',
+                    time_in_force='ioc',
+                    reduce_only=_is_reduce_only(position_side, side),
+                    intent_id=client_order_id or None,
+                    strategy_id='paper_replay',
+                    reason='live_fill_replay',
+                ),
+            ))
+            continue
+
+        if kind == 'account_event' and str(ev.get('event_type', '')) == 'funding':
+            payload = ev.get('payload', {}) if isinstance(ev.get('payload'), dict) else {}
+            funding_events.append(
+                AccountEvent(
+                    exchange=str(ev.get('exchange', 'paper_replay')),
+                    ts=str(ev.get('ts', '')),
+                    event_type='funding',
+                    payload={
+                        'symbol': str(payload.get('symbol') or ev.get('symbol') or '').upper(),
+                        'position_side': str(payload.get('position_side', 'long')).lower(),
+                        'amount': float(payload.get('amount', 0.0) or 0.0),
+                    },
+                )
+            )
+
+    replay_intents.sort(key=lambda item: item[0])
+    market_events = sorted((_market_event_from_row(row) for row in market_rows), key=lambda event: _event_dt(event.ts))
+
+    intent_idx = 0
+    for market_event in market_events:
+        market_dt = _event_dt(market_event.ts)
+        while intent_idx < len(replay_intents) and replay_intents[intent_idx][0] <= market_dt:
+            _, submit_ts, intent = replay_intents[intent_idx]
+            simulator.submit_intents([intent], exchange_name='paper_replay', ts=submit_ts)
+            intent_idx += 1
+        emitted = simulator.on_market_event(market_event)
+        fill_prices.extend(event.price for event in emitted if isinstance(event, FillEvent))
+
+    if market_events:
+        last_market = market_events[-1]
+        while intent_idx < len(replay_intents):
+            _, submit_ts, intent = replay_intents[intent_idx]
+            simulator.submit_intents([intent], exchange_name='paper_replay', ts=submit_ts)
+            emitted = simulator.on_market_event(
+                MarketEvent(
+                    symbol=last_market.symbol,
+                    exchange=last_market.exchange,
+                    channel=last_market.channel,
+                    ts=submit_ts,
+                    payload=dict(last_market.payload),
+                )
+            )
+            fill_prices.extend(event.price for event in emitted if isinstance(event, FillEvent))
+            intent_idx += 1
+
+    for account_event in sorted(funding_events, key=lambda event: _event_dt(event.ts)):
+        simulator.session.apply_events([account_event])
+        funding_total += float(account_event.payload.get('amount', 0.0) or 0.0)
+
+    paper_summary = simulator.snapshot()
+    paper_summary['mode'] = 'paper_replay'
+    paper_summary['fill_prices'] = fill_prices
+    paper_summary['funding_total'] = funding_total
+    return paper_summary
 
 
 def _summarize_runtime_events(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -260,7 +384,7 @@ def build_daily_replay_report(
         audit_events = sum(1 for ev in store.load() if _same_day(ev.ts, target_day))
 
     runtime_summary = _summarize_runtime_events(events)
-    paper_summary = _summarize_runtime_events(events)
+    paper_summary = _rerun_paper_summary(events, runtime_summary)
     drift_metrics = _build_drift_metrics(runtime_summary, paper_summary)
 
     report = DailyReplayReport(
@@ -276,6 +400,7 @@ def build_daily_replay_report(
         audit_events=audit_events,
         invalid_event_lines=invalid_event_lines,
         runtime_summary=runtime_summary,
+        paper_summary=paper_summary,
         drift_metrics=drift_metrics,
     )
     return asdict(report)
