@@ -16,6 +16,12 @@ from quantx.system_log import JsonlEventLogger, LogEvent, MemoryEventLogger
 from quantx.runtime import AccountEvent
 
 
+def _router_with_webhook() -> AlertRouter:
+    router = AlertRouter()
+    router.register_webhook('ops', 'https://example.com/hook')
+    return router
+
+
 class DummyExchange:
     def __init__(self):
         self.place_attempts = 0
@@ -313,6 +319,28 @@ def test_rollout_guards_block_non_whitelist_and_excess_cycle():
     res2 = svc2.execute_orders(mix)
     assert not res2["ok"]
     assert any(r.get("reason") == "symbol_not_allowed_in_rollout" for r in res2["rejected"])
+
+
+def test_readiness_blocks_live_when_stream_is_stale_even_if_replay_persists(tmp_path):
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(dry_run=False, exchange='okx', runtime_mode='derivatives', allowed_symbols=('BTC-USDT-SWAP',), max_orders_per_cycle=1, max_notional_per_cycle=1000.0),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
+        alert_router=_router_with_webhook(),
+        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        runtime_status={
+            'replay_persistence': True,
+            'degraded': False,
+            'reconcile_ok': True,
+            'stream': {'stale': True},
+            'execution_mode': 'blocked',
+        },
+    )
+
+    report = evaluate_readiness(ctx)
+    checks = {check['name']: check for check in report.checks}
+
+    assert checks['live_truth_stream_fresh']['ok'] is False
+    assert checks['live_truth_execution_mode_allowed']['ok'] is False
 
 
 def test_readiness_evaluator_flags_missing_gates(tmp_path):
@@ -732,3 +760,4 @@ def test_live_service_private_stream_updates_runtime_health_and_ingests_messages
 
     assert status['stream']['state'] == 'connected'
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
+

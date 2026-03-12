@@ -31,6 +31,8 @@ class ReadinessContext:
 def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
     checks: list[dict[str, Any]] = []
     runtime_status = ctx.runtime_status or {}
+    stream_status = runtime_status.get('stream', {}) if isinstance(runtime_status.get('stream'), dict) else {}
+    execution_mode = str(runtime_status.get('execution_mode', 'live'))
 
     _append_check(
         checks,
@@ -113,8 +115,20 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
     _append_check(
         checks,
         'live_truth_reconcile_ok',
-        bool(runtime_status.get('reconcile_ok')),
+        bool(runtime_status.get('reconcile_ok', True)),
         'runtime truth reconciliation must be healthy before live rollout',
+    )
+    _append_check(
+        checks,
+        'live_truth_stream_fresh',
+        not bool(stream_status.get('stale')),
+        'runtime truth private stream must be fresh before live rollout',
+    )
+    _append_check(
+        checks,
+        'live_truth_execution_mode_allowed',
+        execution_mode in {'live', 'reduce_only'},
+        'runtime truth execution mode must allow new live risk',
     )
     _append_check(
         checks,
@@ -125,7 +139,9 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         and ctx.oms_store is not None
         and bool(runtime_status.get('replay_persistence'))
         and (not bool(runtime_status.get('degraded')))
-        and bool(runtime_status.get('reconcile_ok')),
+        and bool(runtime_status.get('reconcile_ok', True))
+        and (not bool(stream_status.get('stale')))
+        and execution_mode in {'live', 'reduce_only'},
         'micro-live requires paper closure, alerts, OMS persistence, and healthy runtime truth state',
     )
 

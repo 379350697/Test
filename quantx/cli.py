@@ -44,13 +44,25 @@ def _attach_strategy_repo_args(cmd):
     cmd.add_argument("--strategy-repo", action="append", default=[], help="custom strategy file/dir path, can repeat")
 
 
-def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_binance: bool) -> dict[str, object]:
-    runtime_truth = {
+def _runtime_truth_snapshot(*, recovery_mode: str) -> dict[str, object]:
+    execution_mode = 'blocked' if recovery_mode == 'cold' else 'live'
+    return {
         'replay_persistence': True,
         'degraded': False,
         'reconcile_ok': True,
-        'recovery_mode': 'cold' if executor.state.mode == 'paper' else 'warm',
+        'recovery_mode': recovery_mode,
+        'resume_mode': execution_mode,
+        'execution_mode': execution_mode,
+        'stream': {
+            'state': 'idle',
+            'stale': False,
+            'gap_detected': False,
+            'reconcile_required': False,
+        },
     }
+
+def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_binance: bool) -> dict[str, object]:
+    runtime_truth = _runtime_truth_snapshot(recovery_mode='cold' if executor.state.mode == 'paper' else 'warm')
     return {
         'execution_path': 'runtime_core',
         'runtime_mode': 'derivatives',
@@ -81,7 +93,7 @@ def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance:
         risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
         alert_router=router,
         oms_store=None,
-        runtime_status={'replay_persistence': True, 'degraded': False, 'reconcile_ok': True},
+        runtime_status=_runtime_truth_snapshot(recovery_mode='cold' if mode != 'live' else 'warm'),
     )
     report = evaluate_readiness(ctx)
     return {
@@ -467,6 +479,7 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
 
 
 
