@@ -5,6 +5,7 @@ from .live_coordinator import LiveRuntimeCoordinator
 from .models import AccountLedger, OrderIntent, PositionLeg, TrackedOrder
 from .paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
 from .order_engine import OrderEngine, OrderStateError
+from .reconcile import build_reconcile_report
 from .replay_store import RuntimeReplayStore
 from .runtime_risk import RuntimeRiskLimits, RuntimeRiskValidator
 from .session import RuntimeSession
@@ -37,11 +38,13 @@ __all__ = [
     'PositionLeg',
     'RuntimeReplayStore',
     'RuntimeRiskLimits',
+    'build_reconcile_report',
     'RuntimeRiskValidator',
     'RuntimeSession',
     'StrategyContext',
     'StrategyRuntime',
     'TrackedOrder',
 ]
+
 
 
