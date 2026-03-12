@@ -60,4 +60,3 @@ quantx autotrade-start --exchange okx --strategy cta_strategy --watchlist '["BTC
 quantx autotrade-status --exchange okx --strategy cta_strategy --watchlist '["BTC-USDT-SWAP","ETH-USDT-SWAP"]' --total-margin 1000 --backtest-report outputs/latest/report.json --paper-events runtime/paper/events.jsonl --runtime-events runtime/events.jsonl --oms runtime/oms/events.jsonl --alert-webhook https://example.com/hook --json
 quantx replay-daily --events runtime/events.jsonl --oms runtime/oms/events.jsonl --audit runtime/audit/events.jsonl --json
 ```
-

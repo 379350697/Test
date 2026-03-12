@@ -161,5 +161,3 @@ class LiveRuntime:
             'reduce_only': bool(intent.reduce_only),
             'metadata': dict(intent.metadata),
         }
-
-

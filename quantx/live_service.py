@@ -481,4 +481,3 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
-
