@@ -548,3 +548,51 @@ def test_deploy_readiness_prefers_okx_before_binance():
     assert binance_checks['runtime_execution_path']['ok'] is True
     assert binance_checks['rollout_exchange_order']['ok'] is False
 
+
+def test_live_execution_service_ingests_private_stream_events_into_runtime_truth(tmp_path):
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    adapter = OKXPerpAdapter()
+    svc = LiveExecutionService(
+        _DummyOKXPerpExchange(),
+        config=LiveExecutionConfig(dry_run=False, max_retries=1, retry_backoff_ms=1, runtime_mode='derivatives', exchange='okx'),
+        runtime_adapter=adapter,
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'events.jsonl'),
+    )
+    svc.sync_symbol_rules(['BTCUSDT'])
+    result = svc.execute_orders(
+        [
+            {'symbol': 'BTCUSDT', 'side': 'BUY', 'qty': 0.01, 'price': 100000.0, 'position_side': 'long'}
+        ]
+    )
+    client_order_id = result['accepted'][0]['result']['clientOrderId']
+
+    svc.ingest_runtime_event(
+        adapter.normalize_fill_event(
+            {
+                'instId': 'BTC-USDT-SWAP',
+                'clOrdId': client_order_id,
+                'ordId': 'oid-1',
+                'tradeId': 'tid-1',
+                'fillSz': '0.01',
+                'fillPx': '100000',
+                'fillFee': '-0.1',
+                'side': 'buy',
+                'posSide': 'long',
+                'tdMode': 'cross',
+                'fillTime': '1710201601000',
+            }
+        )
+    )
+    svc.ingest_runtime_event(
+        adapter.normalize_funding_event(
+            {'instId': 'BTC-USDT-SWAP', 'posSide': 'long', 'funding': '-0.2', 'ts': '1710230400000'}
+        )
+    )
+
+    snapshot = svc.runtime_snapshot()
+
+    assert snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 0.01
+    assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
+    assert snapshot['observed_exchange']
+

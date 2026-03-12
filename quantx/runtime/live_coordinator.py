@@ -12,7 +12,7 @@ from .session import RuntimeSession
 @dataclass(slots=True)
 class LiveRuntimeCoordinator:
     session: RuntimeSession
-    replay_store: RuntimeReplayStore
+    replay_store: RuntimeReplayStore | None = None
     degraded: bool = False
 
     def submit_intents(self, intents: Iterable[OrderIntent], *, exchange: str, ts: str) -> list[OrderEvent]:
@@ -29,11 +29,13 @@ class LiveRuntimeCoordinator:
             persisted.append(self._intent_created_event(intent, exchange=exchange, ts=ts, client_order_id=client_order_id))
             persisted.extend(events_by_client.get(client_order_id, []))
 
-        self.replay_store.append_all(persisted)
+        if self.replay_store is not None:
+            self.replay_store.append_all(persisted)
         return emitted
 
     def apply_event(self, event: object) -> object:
-        self.replay_store.append(event)
+        if self.replay_store is not None:
+            self.replay_store.append(event)
         self.session.apply_events([event])
         return event
 
@@ -42,7 +44,7 @@ class LiveRuntimeCoordinator:
 
     def status(self) -> dict[str, bool]:
         return {
-            'replay_persistence': self.replay_store.path.exists(),
+            'replay_persistence': bool(self.replay_store is not None and self.replay_store.path.exists()),
             'degraded': self.degraded,
         }
 
@@ -77,3 +79,4 @@ class LiveRuntimeCoordinator:
                 'tags': list(intent.tags),
             },
         )
+

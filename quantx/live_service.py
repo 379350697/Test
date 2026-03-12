@@ -1,4 +1,4 @@
-﻿"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
+"""Live execution service bridging rebalance intents to exchange clients (P0/P1)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from typing import Any
 
 from .error_codes import QX_EXEC_AUTO_DEGRADED, QX_EXEC_CYCLE_LIMIT, QX_EXEC_PLACE_ORDER_EMPTY, with_code
 from .exchange_rules import SymbolRule, validate_order
+from .runtime.live_coordinator import LiveRuntimeCoordinator
 from .runtime.models import OrderIntent
+from .runtime.replay_store import RuntimeReplayStore
 from .runtime.session import RuntimeSession
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
@@ -44,6 +46,7 @@ class LiveExecutionService:
         config: LiveExecutionConfig | None = None,
         event_logger: EventLogger | None = None,
         runtime_adapter: Any | None = None,
+        runtime_event_log_path: str | None = None,
     ):
         self.client = client
         self.risk_limits = risk_limits or RiskLimits()
@@ -52,7 +55,12 @@ class LiveExecutionService:
         self.symbol_rules: dict[str, SymbolRule] = {}
         self.event_logger = event_logger
         self.runtime_adapter = runtime_adapter
-        self.runtime_session = RuntimeSession(mode='live', wallet_balance=0.0)
+        replay_store = RuntimeReplayStore(runtime_event_log_path) if runtime_event_log_path else None
+        self.runtime_coordinator = LiveRuntimeCoordinator(
+            session=RuntimeSession(mode='live', wallet_balance=0.0),
+            replay_store=replay_store,
+        )
+        self.runtime_session = self.runtime_coordinator.session
         self._consecutive_failures = 0
 
     def _log(
@@ -188,7 +196,7 @@ class LiveExecutionService:
                 res = self._place_with_retry(order)
                 accepted.append({"order": od, "result": res})
                 if self.runtime_adapter is not None:
-                    self.runtime_session.submit_intents([self._runtime_intent(order, ts=ts)], exchange=self.config.exchange, ts=ts)
+                    self.runtime_coordinator.submit_intents([self._runtime_intent(order, ts=ts)], exchange=self.config.exchange, ts=ts)
                     runtime_event = self.runtime_adapter.normalize_place_order_response(order, res, ts=ts)
                     runtime_events.append(asdict(runtime_event))
                     self._apply_runtime_event(runtime_event)
@@ -280,8 +288,11 @@ class LiveExecutionService:
         self._log("system", "reconcile", stage="reconcile", payload={"open_orders": len(snapshot["open_orders"]), "positions": len(snapshot["positions"])})
         return snapshot
 
+    def ingest_runtime_event(self, event: Any) -> None:
+        self._apply_runtime_event(event)
+
     def runtime_snapshot(self) -> dict[str, Any]:
-        return self.runtime_session.snapshot()
+        return self.runtime_coordinator.snapshot()
 
     def _runtime_intent(self, order: ExchangeOrder, *, ts: str) -> OrderIntent:
         return OrderIntent(
@@ -302,7 +313,7 @@ class LiveExecutionService:
 
     def _apply_runtime_event(self, event: Any) -> None:
         try:
-            self.runtime_session.apply_events([event])
+            self.runtime_coordinator.apply_event(event)
         except Exception:
             return
 
@@ -325,4 +336,7 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
+
+
+
 
