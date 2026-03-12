@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -54,9 +54,10 @@ def build_reconcile_report(
             'delta': exchange_float - runtime_float,
         }
 
+    severity = 'block' if position_mismatches else 'warn' if account_mismatches else 'ok'
     return {
         'ok': not position_mismatches and not account_mismatches,
         'position_mismatches': position_mismatches,
         'account_mismatches': account_mismatches,
-        'severity': 'warn' if position_mismatches or account_mismatches else 'ok',
+        'severity': severity,
     }

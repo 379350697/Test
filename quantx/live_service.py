@@ -131,6 +131,15 @@ class LiveExecutionService:
         rejected: list[dict[str, Any]] = []
         runtime_events: list[dict[str, Any]] = []
 
+        status = self.runtime_status()
+        if status.get("execution_mode") == "blocked":
+            return {
+                "accepted": [],
+                "rejected": [{"reason": "runtime_truth_blocked"}],
+                "runtime_events": [],
+                "runtime_snapshot": self.runtime_snapshot(),
+                "ok": False,
+            }
         total_notional = sum(abs(float(od.get("qty", 0.0)) * float(od.get("price", 0.0))) for od in orders)
         if self.config.max_orders_per_cycle is not None and len(orders) > self.config.max_orders_per_cycle:
             reason = with_code(QX_EXEC_CYCLE_LIMIT, "max_orders_per_cycle_exceeded")
@@ -340,6 +349,8 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
+
+
 
 
 

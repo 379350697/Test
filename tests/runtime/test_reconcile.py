@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from quantx.runtime import build_reconcile_report
 
@@ -44,3 +44,18 @@ def test_reconcile_report_flags_position_and_margin_mismatch_without_rewriting_r
     assert report['position_mismatches']['BTC-USDT-SWAP']['runtime_qty'] == 1.0
     assert report['position_mismatches']['BTC-USDT-SWAP']['exchange_qty'] == 2.0
     assert runtime_snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 1.0
+
+
+def test_reconcile_report_escalates_to_block_for_position_mismatch():
+    report = build_reconcile_report(
+        {
+            'positions': {'BTC-USDT-SWAP': {'long': {'qty': 1.0, 'avg_entry_price': 100.0}}},
+            'ledger': {'equity': 1000.0},
+            'observed_exchange': {
+                'positions': {'BTC-USDT-SWAP': {'long': {'qty': 2.0, 'avg_entry_price': 100.0}}},
+                'account': {'equity': 1000.0},
+            },
+        }
+    )
+
+    assert report['severity'] == 'block'

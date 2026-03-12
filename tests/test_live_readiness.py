@@ -267,6 +267,18 @@ def test_webhook_alert_channel_retry_and_router(monkeypatch):
     assert rec["delivery"] == "sent"
 
 
+def test_live_service_blocks_new_orders_when_reconcile_health_is_blocked():
+    svc = LiveExecutionService(DummyExchange(), config=LiveExecutionConfig(dry_run=True, exchange='okx'))
+    svc.runtime_coordinator.health.mark_reconcile({'ok': False, 'severity': 'block'})
+
+    result = svc.execute_orders([
+        {'symbol': 'BTCUSDT', 'side': 'BUY', 'qty': 0.01, 'price': 50000.0, 'position_side': 'long'}
+    ])
+
+    assert result['ok'] is False
+    assert result['rejected'][0]['reason'] == 'runtime_truth_blocked'
+
+
 def test_rollout_guards_block_non_whitelist_and_excess_cycle():
     ex = DummyExchange()
     svc = LiveExecutionService(
@@ -650,6 +662,7 @@ def test_live_execution_service_ingests_private_stream_events_into_runtime_truth
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['qty'] == 0.01
     assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
     assert snapshot['observed_exchange']
+
 
 
 
