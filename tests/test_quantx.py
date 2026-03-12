@@ -117,6 +117,23 @@ def test_backtest_and_walk_forward(tmp_path):
     assert len(wf) >= 1
 
 
+def test_backtest_payload_exposes_gate_relevant_cost_and_fidelity_metadata(tmp_path):
+    from quantx.cli import main
+
+    fp = generate_demo_data(str(tmp_path / "demo.csv"), bars=180)
+    payload = main([
+        'backtest',
+        '--file', fp,
+        '--strategy', 'dca',
+        '--params', '{}',
+        '--json',
+    ])
+
+    assert 'promotion_summary' in payload
+    assert 'fidelity' in payload['promotion_summary']
+    assert 'fee_ratio' in payload['promotion_summary']
+
+
 def test_custom_strategy_repo_repro_and_report(tmp_path):
     strategy_dir = tmp_path / "my_repo"
     strategy_dir.mkdir()

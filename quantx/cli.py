@@ -341,7 +341,7 @@ def main(argv=None):
         payload["artifacts"] = write_report(res, args.report_dir)
         payload["custom_loaded"] = load_info
         _print(payload, args.json)
-        return
+        return payload
     if args.cmd == "backtest-tick":
         payload = run_tick_backtest(load_tick_csv(args.file), BacktestConfig(symbol=args.symbol, timeframe="tick"), threshold_bps=args.threshold_bps)
         payload["artifacts"] = write_report_payload(payload, args.report_dir)

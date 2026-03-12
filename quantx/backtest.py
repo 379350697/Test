@@ -11,6 +11,7 @@ from .models import BacktestConfig, BacktestResult, Position, RunMetadata, Trade
 from .analytics import evaluate_targets, extended_metrics
 from .indicator_cache import IndicatorCache
 from .repro import now_utc_iso, python_fingerprint, stable_hash
+from .reporting import build_promotion_summary
 from .strategies import get_strategy_class
 from .strategy_loader import load_strategy_repos
 from .runtime.events import FillEvent, MarketEvent, OrderEvent
@@ -724,6 +725,13 @@ def result_to_dict(res: BacktestResult, mode: str = "full") -> dict:
         "metrics": res.metrics,
         "score": {"total": res.score_total, "breakdown": res.score_breakdown},
     }
+    payload["promotion_summary"] = build_promotion_summary(
+        payload,
+        fidelity=str(res.extra.get("runtime", {}).get("fidelity", "low")),
+        runtime_mode=str(res.extra.get("runtime", {}).get("mode", "bar_backtest")),
+        trade_count=len(res.trades),
+        stability_score=float(res.score_total),
+    )
     if mode == "minimal":
         return payload
     if mode == "summary":
