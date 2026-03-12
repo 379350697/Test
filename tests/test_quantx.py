@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 import pytest
 
@@ -40,7 +40,7 @@ def test_builtin_strategy_registry_contains_core_and_aliases():
         "grid",
         "tsmom",
         "breakout_momo",
-        "剥头皮",
+        "鍓ュご鐨?",
     }
     assert expected_core.issubset(set(STRATEGY_REGISTRY))
     assert STRATEGY_REGISTRY["breakout"] is STRATEGY_REGISTRY["cta_strategy"]
@@ -78,8 +78,8 @@ def test_breakout_strategy_default_lookback_is_applied_in_signal():
 
 
 def test_scalping_strategy_registry_and_signal():
-    assert STRATEGY_REGISTRY["scalping"] is STRATEGY_REGISTRY["剥头皮"]
-    strategy = get_strategy_class("剥头皮")(min_score=4)
+    assert STRATEGY_REGISTRY["scalping"] is STRATEGY_REGISTRY["鍓ュご鐨?"]
+    strategy = get_strategy_class("鍓ュご鐨?")(min_score=4)
 
     candles = []
     for i in range(60):
@@ -473,3 +473,43 @@ def test_deploy_and_execute_order_cli_route_through_runtime_core():
     assert deploy_payload['runtime']['rollout_exchange'] == 'okx'
     assert deploy_payload['readiness']['checks_by_name']['runtime_execution_path']['ok'] is True
     assert deploy_payload['readiness']['checks_by_name']['rollout_exchange_order']['ok'] is True
+
+
+def test_event_backtest_runtime_path():
+    from quantx.backtest import run_event_backtest
+    from quantx.runtime.events import MarketEvent
+    from quantx.runtime.models import OrderIntent
+    from quantx.runtime.strategy_runtime import BaseEventStrategy
+
+    class _EventScalpStrategy(BaseEventStrategy):
+        strategy_id = 'event-scalp'
+        version = '0.1.0'
+
+        def on_event(self, ctx, event):
+            if event.payload['price'] <= 100.0:
+                return [
+                    OrderIntent(
+                        symbol=event.symbol,
+                        side='buy',
+                        position_side='long',
+                        qty=1.0,
+                        price=event.payload['price'],
+                        order_type='market',
+                        time_in_force='ioc',
+                        reduce_only=False,
+                    )
+                ]
+            return []
+
+    tape = [
+        MarketEvent(symbol='SOLUSDT', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:00+00:00', payload={'price': 101.0}),
+        MarketEvent(symbol='SOLUSDT', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:01+00:00', payload={'price': 100.0}),
+        MarketEvent(symbol='SOLUSDT', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:02+00:00', payload={'price': 103.0}),
+    ]
+
+    res = run_event_backtest(tape, _EventScalpStrategy(), BacktestConfig(symbol='SOLUSDT', timeframe='event', fee_rate=0.0, slippage_pct=0.0))
+
+    assert res.extra['runtime']['mode'] == 'event_backtest'
+    assert res.extra['runtime']['fidelity'] == 'high'
+    assert len(res.trades) == 1
+

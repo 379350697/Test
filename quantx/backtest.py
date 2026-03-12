@@ -13,10 +13,12 @@ from .indicator_cache import IndicatorCache
 from .repro import now_utc_iso, python_fingerprint, stable_hash
 from .strategies import get_strategy_class
 from .strategy_loader import load_strategy_repos
-from .runtime.events import FillEvent, OrderEvent
+from .runtime.events import FillEvent, MarketEvent, OrderEvent
 from .runtime.ledger_engine import LedgerEngine
 from .runtime.models import OrderIntent
 from .runtime.order_engine import OrderEngine
+from .runtime.session import RuntimeSession
+from .runtime.strategy_runtime import StrategyRuntime
 
 
 def _max_drawdown(equity: list[float]) -> float:
@@ -147,6 +149,172 @@ class _BacktestRuntimeTrace:
             },
         }
 
+def _event_ts_as_datetime(ts: str) -> datetime:
+    try:
+        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    except ValueError:
+        return datetime.utcnow()
+
+
+def _is_order_marketable(order, market_price: float) -> bool:
+    if order.order_type == 'market' or order.price is None:
+        return True
+    if order.side == 'buy':
+        return market_price <= order.price
+    return market_price >= order.price
+
+
+def _drive_event_backtest_fills(
+    session: RuntimeSession,
+    event: MarketEvent,
+    trades: list[Trade],
+) -> None:
+    market_price = float(event.payload['price'])
+    pending = [
+        order
+        for order in session.order_engine.orders.values()
+        if order.symbol == event.symbol and order.status == 'submitted' and _is_order_marketable(order, market_price)
+    ]
+
+    for order in pending:
+        lifecycle = [
+            OrderEvent(
+                symbol=order.symbol,
+                exchange=event.exchange,
+                ts=event.ts,
+                client_order_id=order.client_order_id,
+                exchange_order_id=order.client_order_id,
+                status='acked',
+                payload={'source': 'event_backtest'},
+            ),
+            OrderEvent(
+                symbol=order.symbol,
+                exchange=event.exchange,
+                ts=event.ts,
+                client_order_id=order.client_order_id,
+                exchange_order_id=order.client_order_id,
+                status='working',
+                payload={'source': 'event_backtest'},
+            ),
+            FillEvent(
+                symbol=order.symbol,
+                exchange=event.exchange,
+                ts=event.ts,
+                client_order_id=order.client_order_id,
+                exchange_order_id=order.client_order_id,
+                trade_id=f'{order.client_order_id}-fill-1',
+                side=order.side,
+                position_side=order.position_side,
+                qty=order.qty,
+                price=market_price,
+                fee=0.0,
+                payload={'source': 'event_backtest'},
+            ),
+        ]
+        session.apply_events(lifecycle)
+        trades.append(
+            Trade(
+                ts=_event_ts_as_datetime(event.ts),
+                symbol=order.symbol,
+                side=order.side.upper(),
+                qty=order.qty,
+                price=market_price,
+                fee=0.0,
+                reason=order.reason or 'event_backtest',
+            )
+        )
+
+
+def run_event_backtest(
+    event_tape: list[MarketEvent],
+    strategy,
+    config: BacktestConfig,
+    *,
+    data_hash: str | None = None,
+) -> BacktestResult:
+    runtime = StrategyRuntime(strategy=strategy)
+    session = RuntimeSession(mode='event_backtest', wallet_balance=config.initial_cash)
+    trades: list[Trade] = []
+    equity_curve: list[tuple[datetime, float]] = []
+    drawdown_curve: list[tuple[datetime, float]] = []
+    peak_eq = config.initial_cash
+
+    for event in event_tape:
+        session.apply_events([event])
+        intents = runtime.on_event(event)
+        session.submit_intents(intents, exchange=event.exchange, ts=event.ts)
+        _drive_event_backtest_fills(session, event, trades)
+
+        dt = _event_ts_as_datetime(event.ts)
+        equity = session.ledger_engine.ledger.equity
+        peak_eq = max(peak_eq, equity)
+        dd = (equity - peak_eq) / peak_eq if peak_eq else 0.0
+        equity_curve.append((dt, equity))
+        drawdown_curve.append((dt, dd))
+
+    if not equity_curve:
+        now = datetime.utcnow()
+        equity_curve.append((now, config.initial_cash))
+        drawdown_curve.append((now, 0.0))
+
+    eq_values = [v for _, v in equity_curve] or [config.initial_cash]
+    rets = [eq_values[i] / eq_values[i - 1] - 1 for i in range(1, len(eq_values)) if eq_values[i - 1] > 0]
+    avg_ret = mean(rets) if rets else 0.0
+    vol = (sum((r - avg_ret) ** 2 for r in rets) / max(1, len(rets))) ** 0.5
+    sharpe = (avg_ret / vol * sqrt(252)) if vol > 0 else 0.0
+    pnl = eq_values[-1] - config.initial_cash
+    win_rate = 0.0
+    fee_paid = sum(t.fee for t in trades)
+
+    metrics = {
+        'total_return_pct': (eq_values[-1] / config.initial_cash - 1) * 100,
+        'pnl': pnl,
+        'max_drawdown_pct': _max_drawdown(eq_values) * 100,
+        'sharpe': sharpe,
+        'trades': float(len(trades)),
+        'win_rate': win_rate,
+        'fee_paid': fee_paid,
+        'fee_ratio': fee_paid / max(1e-9, abs(pnl) + 1),
+    }
+    metrics.update(extended_metrics(eq_values))
+    metrics.update({k: float(v) for k, v in evaluate_targets(metrics).items()})
+    breakdown, total = _stability_score(metrics, len(trades))
+
+    strategy_profile = {
+        'strategy_id': getattr(strategy, 'strategy_id', strategy.__class__.__name__),
+        'class_name': strategy.__class__.__name__,
+        'module': strategy.__class__.__module__,
+        'version': getattr(strategy, 'version', '0.1.0'),
+    }
+    metadata = RunMetadata(
+        strategy_name=strategy_profile['strategy_id'],
+        strategy_version=strategy_profile['version'],
+        strategy_spec_hash=stable_hash(strategy_profile),
+        strategy_source_hash=stable_hash(strategy.__class__.__name__),
+        param_hash=stable_hash(getattr(strategy, 'params', {})),
+        data_hash=data_hash if data_hash is not None else stable_hash([
+            (event.ts, event.symbol, event.exchange, event.channel, event.payload) for event in event_tape
+        ]),
+        python_version=python_fingerprint(),
+        created_at=now_utc_iso(),
+    )
+
+    runtime_snapshot = session.snapshot()
+    runtime_snapshot['fidelity'] = 'high'
+    return BacktestResult(
+        config,
+        metadata,
+        equity_curve,
+        drawdown_curve,
+        trades,
+        metrics,
+        breakdown,
+        total,
+        extra={
+            'strategy_profile': strategy_profile,
+            'runtime': runtime_snapshot,
+        },
+    )
 def run_backtest(
     candles,
     strategy_name: str,
@@ -586,4 +754,5 @@ def result_to_dict(res: BacktestResult, mode: str = "full") -> dict:
         }
     )
     return payload
+
 
