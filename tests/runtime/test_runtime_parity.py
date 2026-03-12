@@ -134,6 +134,47 @@ class _ParityEventStrategy(BaseEventStrategy):
         return []
 
 
+def test_backtest_paper_and_replay_share_runtime_health_and_order_sequence_invariants():
+    tape = [
+        MarketEvent(symbol='BTC-USDT-SWAP', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:00+00:00', payload={'price': 101.0}),
+        MarketEvent(symbol='BTC-USDT-SWAP', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:01+00:00', payload={'price': 100.0}),
+        MarketEvent(symbol='BTC-USDT-SWAP', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:02+00:00', payload={'price': 102.0}),
+    ]
+    backtest = run_event_backtest(
+        tape,
+        _ParityEventStrategy(),
+        BacktestConfig(symbol='BTC-USDT-SWAP', timeframe='event', fee_rate=0.0, slippage_pct=0.0),
+    )
+
+    paper = PaperExchangeSimulator(initial_cash=1000.0, config=PaperExchangeConfig())
+    paper.submit_intents([
+        OrderIntent(
+            symbol='BTC-USDT-SWAP',
+            side='buy',
+            position_side='long',
+            qty=1.0,
+            price=100.0,
+            order_type='market',
+            time_in_force='ioc',
+            reduce_only=False,
+        )
+    ], exchange_name='paper', ts='2026-03-12T00:00:01+00:00')
+    paper.on_market_event(tape[1])
+
+    fixture = Path(__file__).resolve().parents[1] / 'fixtures' / 'runtime_market_tape.jsonl'
+    replay = build_daily_replay_report(event_log_path=str(fixture), day='2026-03-12')
+
+    backtest_runtime = backtest.extra['runtime']
+    paper_runtime = paper.snapshot()
+    replay_runtime = replay['runtime_summary']
+
+    assert list(backtest_runtime['order_state_sequences'].values()) == list(paper_runtime['order_state_sequences'].values())
+    assert backtest_runtime['position_invariants'] == paper_runtime['position_invariants']
+    assert backtest_runtime['ledger_invariants'] == paper_runtime['ledger_invariants']
+    assert replay_runtime['health']['degraded'] is False
+    assert replay_runtime['health']['last_error'] is None
+
+
 def test_event_backtest_paper_and_live_replay_share_order_sequences_for_same_intent_family():
     tape = [
         MarketEvent(symbol='BTC-USDT-SWAP', exchange='backtest', channel='mark_price', ts='2026-03-12T00:00:00+00:00', payload={'price': 101.0}),

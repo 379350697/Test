@@ -118,6 +118,21 @@ def test_build_daily_replay_report_includes_runtime_parity_drift_metrics():
     assert rep['drift_metrics']['paper_vs_live']['equity_drift'] == 0.0
 
 
+def test_build_daily_replay_report_surfaces_runtime_health_and_order_sequence_invariants():
+    fixture = Path(__file__).with_name('fixtures') / 'runtime_market_tape.jsonl'
+
+    rep = build_daily_replay_report(
+        event_log_path=str(fixture),
+        day='2026-03-12',
+    )
+
+    runtime_summary = rep['runtime_summary']
+    assert runtime_summary['health']['degraded'] is False
+    assert runtime_summary['health']['last_error'] is None
+    assert 'position_invariants' in runtime_summary
+    assert 'ledger_invariants' in runtime_summary
+
+
 def test_build_daily_replay_report_reruns_paper_on_market_tape():
     fixture = Path(__file__).with_name('fixtures') / 'runtime_market_tape.jsonl'
 

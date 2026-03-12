@@ -11,7 +11,7 @@ from .audit import JsonlAuditStore
 from .oms import JsonlOMSStore
 from .runtime.events import AccountEvent, FillEvent, MarketEvent
 from .runtime.models import OrderIntent
-from .runtime.paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
+from .runtime.paper_exchange import PaperExchangeConfig, PaperExchangeSimulator, enrich_runtime_snapshot
 from .runtime.session import RuntimeSession
 from .runtime.replay_store import RuntimeReplayStore
 
@@ -230,15 +230,17 @@ def _summarize_runtime_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         replay_store._replay_row(session, replay_row)
 
     snapshot = session.snapshot()
-    return {
-        'mode': 'live_replay',
-        'order_state_sequences': order_state_sequences,
-        'ledger': snapshot.get('ledger', {}),
-        'positions': snapshot.get('positions', {}),
-        'observed_exchange': snapshot.get('observed_exchange', {}),
-        'fill_prices': live_fill_prices,
-        'funding_total': funding_total,
-    }
+    return enrich_runtime_snapshot(
+        {
+            'mode': 'live_replay',
+            'order_state_sequences': order_state_sequences,
+            'ledger': snapshot.get('ledger', {}),
+            'positions': snapshot.get('positions', {}),
+            'observed_exchange': snapshot.get('observed_exchange', {}),
+            'fill_prices': live_fill_prices,
+            'funding_total': funding_total,
+        }
+    )
 
 
 def _flatten_sequences(sequences: dict[str, list[str]]) -> list[str]:

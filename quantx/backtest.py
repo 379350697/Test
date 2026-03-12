@@ -20,6 +20,7 @@ from .runtime.models import OrderIntent
 from .runtime.order_engine import OrderEngine
 from .runtime.session import RuntimeSession
 from .runtime.strategy_runtime import StrategyRuntime
+from .runtime.paper_exchange import enrich_runtime_snapshot
 
 
 def _max_drawdown(equity: list[float]) -> float:
@@ -269,7 +270,7 @@ def run_event_backtest(
         created_at=now_utc_iso(),
     )
 
-    runtime_snapshot = session.snapshot()
+    runtime_snapshot = enrich_runtime_snapshot(session.snapshot())
     runtime_snapshot['fidelity'] = 'high'
 
     return BacktestResult(
@@ -664,7 +665,7 @@ def run_backtest(
         python_version=python_fingerprint(),
         created_at=now_utc_iso(),
     )
-    runtime_snapshot = runtime_session.snapshot()
+    runtime_snapshot = enrich_runtime_snapshot(runtime_session.snapshot())
     runtime_snapshot['fidelity'] = 'low'
     return BacktestResult(
         config,

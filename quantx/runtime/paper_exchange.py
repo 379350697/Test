@@ -1,11 +1,64 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from .events import MarketEvent
 from .fill_engine import FillEngine, FillEngineConfig
 from .models import OrderIntent
 from .session import RuntimeSession
+
+
+def enrich_runtime_snapshot(
+    snapshot: dict[str, object],
+    *,
+    degraded: bool = False,
+    last_error: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    enriched = dict(snapshot)
+    enriched['health'] = {
+        'degraded': bool(degraded),
+        'last_error': dict(last_error) if last_error is not None else None,
+    }
+    enriched['position_invariants'] = _position_invariants(snapshot)
+    enriched['ledger_invariants'] = _ledger_invariants(snapshot)
+    return enriched
+
+
+def _position_invariants(snapshot: dict[str, object]) -> dict[str, object]:
+    positions = snapshot.get('positions', {}) if isinstance(snapshot.get('positions'), dict) else {}
+    open_position_count = 0
+    fee_totals_non_negative = True
+
+    for sides in positions.values():
+        if not isinstance(sides, dict):
+            continue
+        for leg in sides.values():
+            if not isinstance(leg, dict):
+                continue
+            qty = float(leg.get('qty', 0.0) or 0.0)
+            if abs(qty) > 1e-12:
+                open_position_count += 1
+            fee_totals_non_negative = fee_totals_non_negative and float(leg.get('fee_total', 0.0) or 0.0) >= 0.0
+
+    return {
+        'positions_flat': open_position_count == 0,
+        'open_position_count': open_position_count,
+        'fee_totals_non_negative': fee_totals_non_negative,
+    }
+
+
+def _ledger_invariants(snapshot: dict[str, object]) -> dict[str, object]:
+    ledger = snapshot.get('ledger', {}) if isinstance(snapshot.get('ledger'), dict) else {}
+    equity = float(ledger.get('equity', 0.0) or 0.0)
+    used_margin = float(ledger.get('used_margin', 0.0) or 0.0)
+    maintenance_margin = float(ledger.get('maintenance_margin', 0.0) or 0.0)
+
+    return {
+        'equity_non_negative': equity >= 0.0,
+        'used_margin_non_negative': used_margin >= 0.0,
+        'maintenance_margin_non_negative': maintenance_margin >= 0.0,
+    }
 
 
 @dataclass(slots=True)
@@ -67,4 +120,4 @@ class PaperExchangeSimulator:
         )
 
     def snapshot(self) -> dict[str, object]:
-        return self.session.snapshot()
+        return enrich_runtime_snapshot(self.session.snapshot())
