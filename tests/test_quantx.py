@@ -421,3 +421,28 @@ def test_paper_executor_exposes_runtime_state_for_cli_like_flows():
     assert ex.state.positions['BTCUSDT'] == pytest.approx(-0.25)
     assert ex.state.runtime['mode'] == 'paper'
     assert ex.state.runtime['ledger']['equity'] > 0
+
+
+def test_backtest_runtime_payload_includes_parity_order_state_sequences():
+    from datetime import datetime, timedelta
+
+    candles = [
+        Candle(
+            ts=datetime(2024, 1, 1) + timedelta(hours=i),
+            open=100.0 + i,
+            high=101.0 + i,
+            low=99.0 + i,
+            close=100.5 + i,
+            volume=10.0 + i,
+        )
+        for i in range(40)
+    ]
+    cfg = BacktestConfig(symbol='BTCUSDT', timeframe='1h')
+
+    res = run_backtest(candles, 'dca', {'buy_interval': 12, 'buy_amount_usdt': 20}, cfg)
+
+    assert 'order_state_sequences' in res.extra['runtime']
+    sequences = list(res.extra['runtime']['order_state_sequences'].values())
+    assert sequences
+    assert sequences[0][0] == 'intent_created'
+    assert sequences[0][-1] == 'filled'

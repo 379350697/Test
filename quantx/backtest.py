@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -52,7 +52,13 @@ class _BacktestRuntimeTrace:
         self.order_engine = OrderEngine()
         self.ledger_engine = LedgerEngine(wallet_balance=initial_cash)
         self._order_ids: list[str] = []
+        self._order_state_sequences: dict[str, list[str]] = {}
         self._sequence = 0
+
+    def _record_state(self, client_order_id: str, status: str) -> None:
+        sequence = self._order_state_sequences.setdefault(client_order_id, [])
+        if not sequence or sequence[-1] != status:
+            sequence.append(status)
 
     def record_trade(self, trade: Trade, position_side: str) -> None:
         side = trade.side.lower()
@@ -69,10 +75,11 @@ class _BacktestRuntimeTrace:
             time_in_force="ioc",
             reduce_only=reduce_only,
         )
-        self.order_engine.create_intent(client_order_id, intent)
+        order = self.order_engine.create_intent(client_order_id, intent)
+        self._record_state(client_order_id, order.status)
         ts = trade.ts.isoformat() if hasattr(trade.ts, "isoformat") else str(trade.ts)
         for status in ("risk_accepted", "submitted", "acked", "working"):
-            self.order_engine.apply_order_event(
+            order = self.order_engine.apply_order_event(
                 OrderEvent(
                     symbol=trade.symbol,
                     exchange="backtest",
@@ -83,6 +90,7 @@ class _BacktestRuntimeTrace:
                     payload={"reason": trade.reason},
                 )
             )
+            self._record_state(client_order_id, order.status)
 
         fill = FillEvent(
             symbol=trade.symbol,
@@ -98,7 +106,8 @@ class _BacktestRuntimeTrace:
             fee=trade.fee,
             payload={"reason": trade.reason},
         )
-        self.order_engine.apply_fill_event(fill)
+        order = self.order_engine.apply_fill_event(fill)
+        self._record_state(client_order_id, order.status)
         self.ledger_engine.apply_fill(fill)
         self._order_ids.append(client_order_id)
 
@@ -121,6 +130,9 @@ class _BacktestRuntimeTrace:
         return {
             "mode": "backtest",
             "orders": orders,
+            "order_state_sequences": {
+                order_id: list(self._order_state_sequences.get(order_id, [])) for order_id in self._order_ids
+            },
             "ledger": {
                 "wallet_balance": cash,
                 "equity": equity,
@@ -134,7 +146,6 @@ class _BacktestRuntimeTrace:
                 "short": {"qty": short_qty, "avg_entry_price": avg_price if short_qty > 0 else 0.0},
             },
         }
-
 
 def run_backtest(
     candles,
@@ -575,3 +586,4 @@ def result_to_dict(res: BacktestResult, mode: str = "full") -> dict:
         }
     )
     return payload
+

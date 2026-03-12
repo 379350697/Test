@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -24,12 +24,16 @@ class PaperLiveExecutor:
     def __init__(self, mode: str = 'paper', initial_cash: float = 10_000.0):
         if mode not in {'paper', 'live'}:
             raise ValueError('mode must be paper/live')
-        self.state = ExecutionState(mode=mode, runtime={'mode': mode, 'orders': [], 'ledger': {}, 'positions': {}})
+        self.state = ExecutionState(
+            mode=mode,
+            runtime={'mode': mode, 'orders': [], 'order_state_sequences': {}, 'ledger': {}, 'positions': {}},
+        )
         self._order_engine = OrderEngine()
         self._ledger_engine = LedgerEngine(wallet_balance=initial_cash)
         self._fill_engine = FillEngine(FillEngineConfig(queue_delay_ticks=1, partial_fill_ratio=1.0, slippage_bps=0.0))
         self._market_prices: dict[str, float] = {}
         self._order_ids: list[str] = []
+        self._order_state_sequences: dict[str, list[str]] = {}
         self._sequence = 0
 
     def arm(self):
@@ -141,6 +145,11 @@ class PaperLiveExecutor:
         self.state.logs.append(f'{self._now()} close_all')
         return {'closed': True, 'positions': self.state.positions}
 
+    def _record_order_state(self, client_order_id: str, status: str) -> None:
+        sequence = self._order_state_sequences.setdefault(client_order_id, [])
+        if not sequence or sequence[-1] != status:
+            sequence.append(status)
+
     def _execute_runtime_order(
         self,
         *,
@@ -167,10 +176,11 @@ class PaperLiveExecutor:
             reduce_only=reduce_only,
         )
         order = self._order_engine.create_intent(client_order_id, intent)
+        self._record_order_state(client_order_id, order.status)
         self._order_ids.append(client_order_id)
         emitted: list[object] = []
 
-        self._order_engine.apply_order_event(
+        order = self._order_engine.apply_order_event(
             OrderEvent(
                 symbol=symbol,
                 exchange=self.state.mode,
@@ -181,9 +191,11 @@ class PaperLiveExecutor:
                 payload={'source': 'runtime_executor'},
             )
         )
+        self._record_order_state(client_order_id, order.status)
         submit_events = self._fill_engine.submit_order(order, exchange=self.state.mode, ts=ts)
         for event in submit_events:
-            self._order_engine.apply_order_event(event)
+            order = self._order_engine.apply_order_event(event)
+            self._record_order_state(client_order_id, order.status)
             emitted.append(event)
 
         market_events = self._fill_engine.on_market_event(
@@ -197,10 +209,12 @@ class PaperLiveExecutor:
         )
         for event in market_events:
             if isinstance(event, FillEvent):
-                self._order_engine.apply_fill_event(event)
+                order = self._order_engine.apply_fill_event(event)
+                self._record_order_state(client_order_id, order.status)
                 self._ledger_engine.apply_fill(event)
             elif isinstance(event, OrderEvent):
-                self._order_engine.apply_order_event(event)
+                order = self._order_engine.apply_order_event(event)
+                self._record_order_state(client_order_id, order.status)
             emitted.append(event)
 
         self._ledger_engine.apply_market_event(
@@ -242,6 +256,9 @@ class PaperLiveExecutor:
                 }
                 for order_id in self._order_ids
             ],
+            'order_state_sequences': {
+                order_id: list(self._order_state_sequences.get(order_id, [])) for order_id in self._order_ids
+            },
             'ledger': {
                 'wallet_balance': self._ledger_engine.ledger.wallet_balance,
                 'equity': self._ledger_engine.ledger.equity,

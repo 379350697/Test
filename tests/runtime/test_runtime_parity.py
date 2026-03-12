@@ -68,3 +68,38 @@ def test_paper_runtime_executor_tracks_short_positions_with_runtime_trace():
     assert ex.state.positions['BTCUSDT'] == pytest.approx(-0.5)
     assert ex.state.runtime['orders'][-1]['status'] == 'filled'
     assert ex.state.runtime['orders'][-1]['position_side'] == 'short'
+
+
+def test_runtime_parity_backtest_and_paper_share_order_state_sequences_and_flat_ledger_invariants():
+    candles = [
+        Candle(
+            ts=datetime(2024, 1, 1) + timedelta(hours=i),
+            open=100.0 + i,
+            high=101.0 + i,
+            low=99.0 + i,
+            close=100.5 + i,
+            volume=10.0 + i,
+        )
+        for i in range(12)
+    ]
+    cfg = BacktestConfig(symbol='SOLUSDT', timeframe='1h', fee_rate=0.0, slippage_pct=0.0)
+
+    backtest = run_backtest(candles, 'fixed_flip', {}, cfg)
+
+    ex = PaperLiveExecutor('paper')
+    ex.arm()
+    ex.place_order('SOLUSDT', 'BUY', 1.0, order_type='market', market_price=101.0, position_side='long')
+    ex.place_order('SOLUSDT', 'SELL', 1.0, order_type='market', market_price=103.0, position_side='long', reduce_only=True)
+
+    expected_sequence = ['intent_created', 'risk_accepted', 'submitted', 'acked', 'working', 'filled']
+    backtest_sequences = list(backtest.extra['runtime']['order_state_sequences'].values())
+    paper_sequences = list(ex.state.runtime['order_state_sequences'].values())
+
+    assert backtest_sequences
+    assert paper_sequences
+    assert all(sequence == expected_sequence for sequence in backtest_sequences)
+    assert all(sequence == expected_sequence for sequence in paper_sequences)
+    assert backtest.extra['runtime']['ledger']['used_margin'] == pytest.approx(0.0)
+    assert ex.state.runtime['ledger']['used_margin'] == pytest.approx(0.0)
+    assert backtest.extra['runtime']['positions']['long']['qty'] == pytest.approx(0.0)
+    assert ex.state.runtime['positions']['SOLUSDT']['long']['qty'] == pytest.approx(0.0)

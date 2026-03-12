@@ -103,3 +103,16 @@ def test_build_daily_replay_report_from_runtime_event_store_fixture():
     assert rep['rejected'] == 1
     assert rep['reject_reason_top'][0][0] == 'lot_too_small'
     assert rep['invalid_event_lines'] == 0
+
+
+def test_build_daily_replay_report_includes_runtime_parity_drift_metrics():
+    fixture = Path(__file__).with_name('fixtures') / 'runtime_replay_events.jsonl'
+
+    rep = build_daily_replay_report(
+        event_log_path=str(fixture),
+        day='2026-03-12',
+    )
+
+    assert rep['runtime_summary']['order_state_sequences']['cid-1'] == ['acked', 'filled']
+    assert rep['drift_metrics']['paper_vs_live']['order_state_match_rate'] == 1.0
+    assert rep['drift_metrics']['paper_vs_live']['equity_drift'] == 0.0
