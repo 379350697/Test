@@ -484,6 +484,23 @@ def test_runtime_risk_health_checks_cross_margin_account_state():
     assert not ok and reason == 'risk_ratio_exceeded'
 
 
+
+
+class _FakeOKXPrivateStream:
+    def __init__(self, messages: list[dict[str, object]]):
+        self.messages = list(messages)
+        self.connect_calls = 0
+        self.close_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+
+    def iter_messages(self):
+        for message in self.messages:
+            yield message
+
+    def close(self) -> None:
+        self.close_calls += 1
 class _DummyOKXPerpExchange(DummyExchange):
     def get_raw_open_orders(self, symbol: str | None = None) -> list[dict[str, object]]:
         return [
@@ -666,3 +683,52 @@ def test_live_execution_service_ingests_private_stream_events_into_runtime_truth
 
 
 
+
+
+def test_live_service_private_stream_updates_runtime_health_and_ingests_messages(tmp_path):
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    transport = _FakeOKXPrivateStream(
+        messages=[
+            {
+                'type': 'fill',
+                'payload': {
+                    'instId': 'BTC-USDT-SWAP',
+                    'clOrdId': 'cid-private-1',
+                    'ordId': 'oid-private-1',
+                    'tradeId': 'tid-private-1',
+                    'fillSz': '0.01',
+                    'fillPx': '100000',
+                    'fillFee': '-0.1',
+                    'side': 'buy',
+                    'posSide': 'long',
+                    'tdMode': 'cross',
+                    'fillTime': '1710201601000',
+                },
+            },
+            {
+                'type': 'funding',
+                'payload': {
+                    'instId': 'BTC-USDT-SWAP',
+                    'posSide': 'long',
+                    'funding': '-0.2',
+                    'ts': '1710230400000',
+                },
+            },
+        ]
+    )
+    svc = LiveExecutionService(
+        _DummyOKXPerpExchange(),
+        config=LiveExecutionConfig(dry_run=False, exchange='okx', runtime_mode='derivatives'),
+        runtime_adapter=OKXPerpAdapter(),
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'events.jsonl'),
+        private_stream_transport=transport,
+    )
+
+    svc.run_private_stream_once()
+
+    status = svc.runtime_status()
+    snapshot = svc.runtime_snapshot()
+
+    assert status['stream']['state'] == 'connected'
+    assert snapshot['positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2

@@ -12,6 +12,7 @@ from .exchange_rules import SymbolRule, validate_order
 from .runtime.live_coordinator import LiveRuntimeCoordinator
 from .runtime.models import OrderIntent
 from .runtime.replay_store import RuntimeReplayStore
+from .runtime.private_stream import PrivateStreamSupervisor
 from .runtime.session import RuntimeSession
 from .exchanges.base import ExchangeClient, ExchangeOrder, SymbolSpec
 from .rebalance import TradingConstraints, generate_rebalance_orders
@@ -47,6 +48,7 @@ class LiveExecutionService:
         event_logger: EventLogger | None = None,
         runtime_adapter: Any | None = None,
         runtime_event_log_path: str | None = None,
+        private_stream_transport: Any | None = None,
     ):
         self.client = client
         self.risk_limits = risk_limits or RiskLimits()
@@ -55,6 +57,8 @@ class LiveExecutionService:
         self.symbol_rules: dict[str, SymbolRule] = {}
         self.event_logger = event_logger
         self.runtime_adapter = runtime_adapter
+        self.private_stream_transport = private_stream_transport
+        self.private_stream_supervisor = PrivateStreamSupervisor()
         replay_store = RuntimeReplayStore(runtime_event_log_path) if runtime_event_log_path else None
         self.runtime_coordinator = LiveRuntimeCoordinator(
             session=RuntimeSession(mode='live', wallet_balance=0.0),
@@ -306,6 +310,68 @@ class LiveExecutionService:
     def runtime_status(self) -> dict[str, Any]:
         return self.runtime_coordinator.status()
 
+    def run_private_stream_once(self) -> int:
+        if self.private_stream_transport is None:
+            return 0
+
+        processed = 0
+        now_ts = datetime.now(tz=timezone.utc).isoformat()
+        self.private_stream_transport.connect()
+        self.private_stream_supervisor.mark_connected(now_ts)
+
+        try:
+            for message in self.private_stream_transport.iter_messages():
+                message_ts = self._private_stream_message_ts(message)
+                now_ts = message_ts or now_ts
+                self.private_stream_supervisor.mark_message(now_ts)
+                runtime_event = self._normalize_private_stream_message(message)
+                if runtime_event is None:
+                    continue
+                self._apply_runtime_event(runtime_event)
+                processed += 1
+        except Exception as exc:  # noqa: BLE001
+            self.private_stream_supervisor.mark_disconnect(now_ts, reason=str(exc))
+            self._log('system', 'private_stream_failed', level='ERROR', stage='private_stream', payload={'error': str(exc)})
+        finally:
+            self.runtime_coordinator.health.mark_stream_snapshot(self.private_stream_supervisor.snapshot(now_ts=now_ts))
+            self.private_stream_transport.close()
+
+        return processed
+
+    def _private_stream_message_ts(self, message: dict[str, Any]) -> str | None:
+        payload = message.get('payload', {}) if isinstance(message, dict) else {}
+        if not isinstance(payload, dict):
+            return None
+        for key in ('ts', 'uTime', 'fillTime', 'cTime'):
+            value = payload.get(key)
+            if value is None or value == '':
+                continue
+            if self.runtime_adapter is not None and hasattr(self.runtime_adapter, '_normalize_ts'):
+                return self.runtime_adapter._normalize_ts(value)
+            return str(value)
+        return None
+
+    def _normalize_private_stream_message(self, message: dict[str, Any]) -> Any | None:
+        if self.runtime_adapter is None or not isinstance(message, dict):
+            return None
+
+        payload = message.get('payload', {})
+        if not isinstance(payload, dict):
+            return None
+
+        message_type = str(message.get('type', '')).lower()
+        normalizers = {
+            'order': 'normalize_order_event',
+            'fill': 'normalize_fill_event',
+            'position': 'normalize_position_event',
+            'account': 'normalize_account_event',
+            'funding': 'normalize_funding_event',
+        }
+        method_name = normalizers.get(message_type)
+        if method_name is None or not hasattr(self.runtime_adapter, method_name):
+            return None
+        return getattr(self.runtime_adapter, method_name)(payload)
+
     def _runtime_intent(self, order: ExchangeOrder, *, ts: str) -> OrderIntent:
         return OrderIntent(
             symbol=order.symbol,
@@ -349,6 +415,8 @@ class LiveExecutionService:
     def _client_order_id(self, symbol: str, idx: int) -> str:
         ts = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         return f"{self.config.client_order_prefix}-{symbol}-{ts}-{idx}"
+
+
 
 
 

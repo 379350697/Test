@@ -3,9 +3,10 @@
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .events import OrderEvent
+from .events import FillEvent, OrderEvent
 from .health import RuntimeHealthState
 from .models import OrderIntent
+from .order_engine import OrderStateError
 from .replay_store import RuntimeReplayStore
 from .session import RuntimeSession
 
@@ -38,6 +39,7 @@ class LiveRuntimeCoordinator:
         try:
             if self.replay_store is not None:
                 self.replay_store.append(event)
+            self._prime_event_state(event)
             self.session.apply_events([event])
         except Exception as exc:
             self.health.mark_apply_error(exc, stage='apply_event')
@@ -50,6 +52,57 @@ class LiveRuntimeCoordinator:
     def status(self, *, now_ts: str | None = None, stale_after_s: int = 30) -> dict[str, Any]:
         self.health.mark_replay_persistence(bool(self.replay_store is not None and self.replay_store.path.exists()))
         return self.health.snapshot(now_ts=now_ts, stale_after_s=stale_after_s)
+
+    def _prime_event_state(self, event: object) -> None:
+        if not isinstance(event, FillEvent):
+            return
+
+        client_order_id = event.client_order_id
+        if not client_order_id:
+            return
+
+        try:
+            order = self.session.order_engine.get_order(client_order_id)
+        except OrderStateError:
+            intent = OrderIntent(
+                symbol=event.symbol,
+                side=event.side,
+                position_side=event.position_side,
+                qty=event.qty,
+                price=event.price,
+                order_type='market',
+                time_in_force='ioc',
+                reduce_only=False,
+                intent_id=client_order_id,
+                strategy_id='private_stream',
+                reason='private_stream_fill',
+                created_ts=event.ts,
+                tags=('private_stream',),
+            )
+            self.session.order_engine.create_intent(client_order_id, intent)
+            if client_order_id not in self.session._order_ids:
+                self.session._order_ids.append(client_order_id)
+            self.session._record_state(client_order_id, 'intent_created')
+            order = self.session.order_engine.get_order(client_order_id)
+
+        for status in ('risk_accepted', 'submitted', 'acked'):
+            if order.status == status:
+                continue
+            try:
+                self.session.apply_events([
+                    OrderEvent(
+                        symbol=event.symbol,
+                        exchange=event.exchange,
+                        ts=event.ts,
+                        client_order_id=client_order_id,
+                        exchange_order_id=event.exchange_order_id,
+                        status=status,
+                        payload={},
+                    )
+                ])
+            except OrderStateError:
+                break
+            order = self.session.order_engine.get_order(client_order_id)
 
     def _intent_created_event(
         self,

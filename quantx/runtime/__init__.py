@@ -5,6 +5,7 @@ from .ledger_engine import LedgerEngine
 from .live_coordinator import LiveRuntimeCoordinator
 from .models import AccountLedger, OrderIntent, PositionLeg, TrackedOrder
 from .paper_exchange import PaperExchangeConfig, PaperExchangeSimulator
+from .private_stream import PrivateStreamSupervisor
 from .order_engine import OrderEngine, OrderStateError
 from .reconcile import build_reconcile_report
 from .replay_store import RuntimeReplayStore
@@ -37,6 +38,7 @@ __all__ = [
     'PaperExchangeSimulator',
     'OrderStateError',
     'PositionLeg',
+    'PrivateStreamSupervisor',
     'RuntimeHealthState',
     'RuntimeReplayStore',
     'RuntimeRiskLimits',

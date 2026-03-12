@@ -9,6 +9,7 @@ description = "Quant trading system for crypto exchanges"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",
+    "websocket-client>=1.8",
 ]
 
 [project.scripts]
@@ -22,7 +23,6 @@ where = ["."]
 include = ["quantx*"]
 exclude = ["tests*", "src*"]
 
-
 [project.optional-dependencies]
 dev = [
     "pytest>=9",
@@ -34,16 +34,13 @@ dev = [
     "types-PyYAML>=6.0",
 ]
 
-
 [tool.pytest.ini_options]
 addopts = "--cov=quantx --cov-report=term-missing --cov-fail-under=60 -q"
 pythonpath = ["."]
 
-
 [tool.coverage.run]
 branch = true
 source = ["quantx"]
-
 
 [tool.coverage.report]
 show_missing = true
