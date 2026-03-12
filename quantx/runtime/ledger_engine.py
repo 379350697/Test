@@ -112,6 +112,10 @@ class LedgerEngine:
         self.ledger.maintenance_margin = total_notional * self.maintenance_margin_ratio
         self.ledger.equity = self.ledger.wallet_balance + total_unrealized
         self.ledger.available_margin = self.ledger.equity - self.ledger.used_margin
-        self.ledger.risk_ratio = (
-            self.ledger.maintenance_margin / self.ledger.equity if self.ledger.equity else float('inf')
-        )
+        if self.ledger.maintenance_margin <= 0:
+            self.ledger.risk_ratio = 0.0
+        elif self.ledger.equity <= 0:
+            self.ledger.risk_ratio = float('inf')
+        else:
+            self.ledger.risk_ratio = self.ledger.maintenance_margin / self.ledger.equity
+

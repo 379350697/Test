@@ -48,6 +48,37 @@ def _append_sequence_state(sequences: dict[str, list[str]], client_order_id: str
         sequence.append(status)
 
 
+def _append_runtime_replay_state(sequences: dict[str, list[str]], client_order_id: str, status: str) -> None:
+    prefixes = {
+        'acked': ['intent_created', 'risk_accepted', 'submitted', 'acked'],
+        'working': ['intent_created', 'risk_accepted', 'submitted', 'acked', 'working'],
+        'partially_filled': ['intent_created', 'risk_accepted', 'submitted', 'acked', 'working', 'partially_filled'],
+        'filled': ['intent_created', 'risk_accepted', 'submitted', 'acked', 'working', 'filled'],
+        'canceled': ['intent_created', 'risk_accepted', 'submitted', 'acked', 'working', 'canceled'],
+        'rejected': ['intent_created', 'rejected'],
+        'expired': ['intent_created', 'risk_accepted', 'submitted', 'expired'],
+    }
+    sequence = sequences.setdefault(client_order_id, [])
+    for state in prefixes.get(status, [status]):
+        if state not in sequence:
+            sequence.append(state)
+
+
+def _paper_replay_config(market_rows: list[dict[str, Any]]) -> PaperExchangeConfig:
+    config = PaperExchangeConfig(mode='paper_replay')
+    for row in market_rows:
+        payload = row.get('payload', {}) if isinstance(row.get('payload'), dict) else {}
+        if 'paper_slippage_bps' in payload:
+            config.slippage_bps = float(payload.get('paper_slippage_bps', 0.0) or 0.0)
+        if 'paper_partial_fill_ratio' in payload:
+            config.partial_fill_ratio = float(payload.get('paper_partial_fill_ratio', 1.0) or 1.0)
+        if 'paper_queue_delay_ticks' in payload:
+            config.queue_delay_ticks = int(payload.get('paper_queue_delay_ticks', 1) or 1)
+        if 'paper_cancel_delay_ticks' in payload:
+            config.cancel_delay_ticks = int(payload.get('paper_cancel_delay_ticks', 1) or 1)
+    return config
+
+
 def _event_dt(ts: str) -> datetime:
     try:
         return datetime.fromisoformat(ts.replace('Z', '+00:00'))
@@ -77,7 +108,7 @@ def _rerun_paper_summary(events: list[dict[str, Any]], live_summary: dict[str, A
         paper_summary['mode'] = 'paper_replay'
         return paper_summary
 
-    simulator = PaperExchangeSimulator(initial_cash=0.0, config=PaperExchangeConfig(mode='paper_replay'))
+    simulator = PaperExchangeSimulator(initial_cash=0.0, config=_paper_replay_config(market_rows))
     fill_prices: list[float] = []
     funding_total = 0.0
     seen_order_ids: set[str] = set()
@@ -181,14 +212,14 @@ def _summarize_runtime_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         kind = str(ev.get('kind', ''))
         if kind == 'order_event':
             client_order_id = str(ev.get('client_order_id', 'unknown'))
-            _append_sequence_state(order_state_sequences, client_order_id, str(ev.get('status', 'unknown')))
+            _append_runtime_replay_state(order_state_sequences, client_order_id, str(ev.get('status', 'unknown')))
             last_exchange = str(ev.get('exchange', last_exchange) or last_exchange)
             last_symbol = str(ev.get('symbol', last_symbol) or last_symbol)
             continue
 
         if kind == 'fill_event':
             client_order_id = str(ev.get('client_order_id', 'unknown'))
-            _append_sequence_state(order_state_sequences, client_order_id, 'filled')
+            _append_runtime_replay_state(order_state_sequences, client_order_id, 'filled')
             fill = FillEvent(
                 symbol=str(ev.get('symbol', '')).upper(),
                 exchange=str(ev.get('exchange', 'replay')),
