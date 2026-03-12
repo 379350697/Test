@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from quantx.bootstrap import bootstrap_recover_and_reconcile
 from quantx.oms import JsonlOMSStore, OMSOrder, OrderManager
@@ -134,3 +134,17 @@ def test_bootstrap_recover_and_reconcile_uses_runtime_replay_for_warm_recovery(t
     assert report['recovery_mode'] == 'warm'
     assert report['runtime_positions']['BTC-USDT-SWAP']['long']['qty'] == 0.25
     assert report['runtime_positions']['BTC-USDT-SWAP']['long']['funding_total'] == -0.2
+
+
+def test_bootstrap_recover_and_reconcile_returns_blocked_resume_mode_for_cold_recovery(tmp_path):
+    report = bootstrap_recover_and_reconcile(
+        service=_StubService({'open_orders': [], 'positions': [], 'symbol_rules': {}}),
+        oms_store=JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl')),
+        runtime_event_log_path=str(tmp_path / 'runtime' / 'missing.jsonl'),
+        initial_cash=1000.0,
+        symbol='BTC-USDT-SWAP',
+    )
+
+    assert report['recovery_mode'] == 'cold'
+    assert report['resume_mode'] == 'blocked'
+    assert report['runtime_status']['degraded'] is True

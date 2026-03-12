@@ -1,4 +1,4 @@
-"""Bootstrap helpers for safe restart takeover in live trading."""
+﻿"""Bootstrap helpers for safe restart takeover in live trading."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any
 
 from .live_service import LiveExecutionService
 from .oms import JsonlOMSStore, OrderManager
+from .runtime.health import RuntimeHealthState
 from .runtime.replay_store import RuntimeReplayStore
 
 
@@ -14,6 +15,8 @@ from .runtime.replay_store import RuntimeReplayStore
 class BootstrapTakeoverReport:
     ok: bool
     recovery_mode: str
+    resume_mode: str
+    runtime_status: dict[str, Any]
     recovered_orders: int
     recovered_working_orders: int
     local_positions: dict[str, float]
@@ -85,6 +88,22 @@ def _warm_runtime_snapshot(runtime_event_log_path: str | None, initial_cash: flo
     return replay_store.rebuild_session(wallet_balance=initial_cash, mode='live').snapshot()
 
 
+def _derive_resume_mode(
+    *,
+    recovery_mode: str,
+    position_diffs: dict[str, float],
+    missing_on_exchange: list[str],
+    unmanaged_on_exchange: list[str],
+) -> str:
+    if recovery_mode == 'cold':
+        return 'blocked'
+    if position_diffs:
+        return 'read_only'
+    if missing_on_exchange or unmanaged_on_exchange:
+        return 'reduce_only'
+    return 'live'
+
+
 def bootstrap_recover_and_reconcile(
     *,
     service: LiveExecutionService,
@@ -149,9 +168,26 @@ def bootstrap_recover_and_reconcile(
     if unmanaged_on_exchange:
         notes.append('exchange_open_orders_not_tracked_locally')
 
+    resume_mode = _derive_resume_mode(
+        recovery_mode=recovery_mode,
+        position_diffs=position_diffs,
+        missing_on_exchange=missing_on_exchange,
+        unmanaged_on_exchange=unmanaged_on_exchange,
+    )
+
+    health = RuntimeHealthState()
+    health.mark_replay_persistence(warm_snapshot is not None)
+    health.mark_recovery_mode(recovery_mode)
+    health.mark_resume_mode(resume_mode)
+    if position_diffs:
+        health.mark_reconcile({'ok': False, 'severity': 'block'})
+    runtime_status = health.snapshot()
+
     report = BootstrapTakeoverReport(
         ok=(len(notes) == 0),
         recovery_mode=recovery_mode,
+        resume_mode=resume_mode,
+        runtime_status=runtime_status,
         recovered_orders=len(om.list_orders()),
         recovered_working_orders=len(local_working),
         local_positions=local_positions,

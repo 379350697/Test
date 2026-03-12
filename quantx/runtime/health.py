@@ -19,6 +19,7 @@ def _parse_ts(value: str | None) -> datetime | None:
 class RuntimeHealthState:
     replay_persistence: bool = False
     recovery_mode: str = 'live'
+    resume_mode: str | None = None
     reconcile_report: dict[str, Any] | None = None
     stream_started_ts: str | None = None
     last_stream_event_ts: str | None = None
@@ -27,6 +28,12 @@ class RuntimeHealthState:
 
     def mark_replay_persistence(self, available: bool) -> None:
         self.replay_persistence = bool(available)
+
+    def mark_recovery_mode(self, mode: str) -> None:
+        self.recovery_mode = mode
+
+    def mark_resume_mode(self, mode: str | None) -> None:
+        self.resume_mode = mode
 
     def mark_reconcile(self, report: dict[str, Any] | None) -> None:
         self.reconcile_report = dict(report) if report is not None else None
@@ -53,9 +60,15 @@ class RuntimeHealthState:
         stale = self._is_stream_stale(now_ts=now_ts, stale_after_s=stale_after_s)
         reconcile = self.reconcile_report or {}
         reconcile_ok = bool(reconcile.get('ok', True))
-
-        degraded = bool(self.last_error) or stale or not reconcile_ok or self.recovery_mode in {'blocked', 'read_only', 'reduce_only', 'cold'}
         execution_mode = self._derive_execution_mode(stale=stale, reconcile=reconcile)
+
+        degraded = (
+            bool(self.last_error)
+            or stale
+            or not reconcile_ok
+            or self.recovery_mode == 'cold'
+            or execution_mode in {'blocked', 'read_only', 'reduce_only'}
+        )
 
         if stale:
             self.last_degrade_reason = 'stream_stale'
@@ -64,6 +77,7 @@ class RuntimeHealthState:
             'replay_persistence': self.replay_persistence,
             'degraded': degraded,
             'recovery_mode': self.recovery_mode,
+            'resume_mode': self.resume_mode,
             'reconcile_ok': reconcile_ok,
             'reconcile': dict(reconcile),
             'execution_mode': execution_mode,
@@ -77,11 +91,11 @@ class RuntimeHealthState:
         }
 
     def _derive_execution_mode(self, *, stale: bool, reconcile: dict[str, Any]) -> str:
-        if self.last_error or stale or reconcile.get('severity') == 'block' or self.recovery_mode in {'blocked', 'cold'}:
+        if self.last_error or stale or reconcile.get('severity') == 'block' or self.recovery_mode == 'cold':
             return 'blocked'
-        if self.recovery_mode == 'read_only':
-            return 'read_only'
-        if self.recovery_mode == 'reduce_only' or reconcile.get('severity') == 'warn':
+        if self.resume_mode in {'blocked', 'read_only', 'reduce_only', 'live'}:
+            return str(self.resume_mode)
+        if reconcile.get('severity') == 'warn':
             return 'reduce_only'
         return 'live'
 
