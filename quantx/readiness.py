@@ -84,6 +84,24 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
         len(ctx.alert_router.channels) > 0,
         'at least one alert webhook channel should be registered',
     )
+    _append_check(
+        checks,
+        'replay_closure_ready',
+        ctx.live_config.runtime_mode == 'derivatives',
+        'replay closure requires the shared runtime path',
+    )
+    _append_check(
+        checks,
+        'paper_closure_ready',
+        _paper_closure_ready(ctx),
+        'paper closure requires rollout symbols and cycle limits to be configured',
+    )
+    _append_check(
+        checks,
+        'micro_live_ready',
+        (not ctx.live_config.dry_run) and _paper_closure_ready(ctx) and len(ctx.alert_router.channels) > 0 and ctx.oms_store is not None,
+        'micro-live requires paper closure, alerts, and OMS persistence',
+    )
 
     has_oms_store = ctx.oms_store is not None
     _append_check(
@@ -108,6 +126,26 @@ def evaluate_readiness(ctx: ReadinessContext) -> ReadinessReport:
 
 def _append_check(checks: list[dict[str, Any]], name: str, cond: bool, advice: str) -> None:
     checks.append({'name': name, 'ok': cond, 'advice': '' if cond else advice})
+
+
+def _paper_closure_ready(ctx: ReadinessContext) -> bool:
+    return (
+        ctx.live_config.runtime_mode == 'derivatives'
+        and ctx.live_config.allowed_symbols is not None
+        and len(ctx.live_config.allowed_symbols) > 0
+        and ctx.live_config.max_orders_per_cycle is not None
+        and ctx.live_config.max_orders_per_cycle > 0
+        and ctx.live_config.max_notional_per_cycle is not None
+        and ctx.live_config.max_notional_per_cycle > 0
+    )
+
+
+def rollout_stage(ctx: ReadinessContext) -> str:
+    if ctx.live_config.dry_run:
+        return 'paper_closure'
+    if ctx.live_config.max_notional_per_cycle is not None and ctx.live_config.max_notional_per_cycle <= 1000.0:
+        return 'micro_live'
+    return 'normal_live'
 
 
 class ReadinessError(RuntimeError):

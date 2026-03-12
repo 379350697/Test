@@ -26,7 +26,7 @@ from .models import BacktestConfig
 from .monitoring import analyze_logs, monitor_equity
 from .optimize import grid_search, random_scan, walk_forward
 from .radar import scan_watchlist
-from .readiness import ReadinessContext, evaluate_readiness
+from .readiness import ReadinessContext, evaluate_readiness, rollout_stage
 from .replay import build_daily_replay_report
 from .reporting import write_report, write_report_payload
 from .risk_engine import RiskLimits
@@ -51,6 +51,8 @@ def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_
         'rollout_exchange': exchange,
         'adapter_contract': f'{exchange}_perp',
         'rollout_gate': 'okx_first' if exchange == 'okx' or enable_binance else 'blocked_until_okx_rollout',
+        'stage': 'paper_closure' if executor.state.mode == 'paper' else 'micro_live',
+        'fidelity': 'high',
         'order_state_sequences': executor.state.runtime.get('order_state_sequences', {}),
     }
 
@@ -58,25 +60,25 @@ def _runtime_cli_metadata(executor: PaperLiveExecutor, *, exchange: str, enable_
 def _readiness_preview(symbol: str, *, mode: str, exchange: str, enable_binance: bool) -> dict[str, object]:
     router = AlertRouter()
     router.register_webhook('ops', 'https://example.com/hook')
-    report = evaluate_readiness(
-        ReadinessContext(
-            live_config=LiveExecutionConfig(
-                dry_run=(mode != 'live'),
-                allowed_symbols=(symbol.upper(),),
-                max_orders_per_cycle=1,
-                max_notional_per_cycle=1000.0,
-                runtime_mode='derivatives',
-                exchange=exchange,
-                enable_binance=enable_binance,
-            ),
-            risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
-            alert_router=router,
-            oms_store=None,
-        )
+    ctx = ReadinessContext(
+        live_config=LiveExecutionConfig(
+            dry_run=(mode != 'live'),
+            allowed_symbols=(symbol.upper(),),
+            max_orders_per_cycle=1,
+            max_notional_per_cycle=1000.0,
+            runtime_mode='derivatives',
+            exchange=exchange,
+            enable_binance=enable_binance,
+        ),
+        risk_limits=RiskLimits(max_symbol_weight=0.5, max_order_notional=1000.0),
+        alert_router=router,
+        oms_store=None,
     )
+    report = evaluate_readiness(ctx)
     return {
         'ok': report.ok,
         'score': report.score,
+        'stage': rollout_stage(ctx),
         'checks': report.checks,
         'checks_by_name': {check['name']: check for check in report.checks},
     }

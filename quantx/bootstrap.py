@@ -15,6 +15,7 @@ class BootstrapTakeoverReport:
     recovered_orders: int
     recovered_working_orders: int
     local_positions: dict[str, float]
+    runtime_positions: dict[str, Any]
     exchange_positions: dict[str, float]
     position_diffs: dict[str, float]
     local_working_order_ids: list[str]
@@ -48,6 +49,30 @@ def _extract_order_id(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _normalize_runtime_snapshot_positions(raw: dict[str, Any], qty_tolerance: float) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for symbol, sides in raw.items():
+        sym = str(symbol).upper()
+        if not isinstance(sides, dict):
+            continue
+        long_qty = float((sides.get('long', {}) or {}).get('qty', 0.0) or 0.0)
+        short_qty = float((sides.get('short', {}) or {}).get('qty', 0.0) or 0.0)
+        net_qty = long_qty - short_qty
+        if abs(net_qty) > qty_tolerance:
+            normalized[sym] = net_qty
+    return normalized
+
+
+def _normalize_runtime_position_rows(rows: list[dict[str, Any]], qty_tolerance: float) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for row in rows:
+        sym = str(row.get('symbol', '')).upper()
+        if not sym:
+            continue
+        normalized[sym] = normalized.get(sym, 0.0) + float(row.get('qty', 0.0) or 0.0)
+    return _normalize_positions(normalized, qty_tolerance)
+
+
 def bootstrap_recover_and_reconcile(
     *,
     service: LiveExecutionService,
@@ -69,14 +94,13 @@ def bootstrap_recover_and_reconcile(
     local_working = sorted(om.list_working_order_ids())
 
     snapshot = service.reconcile(symbol)
-    remote_positions_raw: dict[str, float] = {}
-    position_rows = snapshot.get("runtime_positions") or snapshot.get("positions", [])
-    for row in position_rows:
-        sym = str(row.get("symbol", "")).upper()
-        if not sym:
-            continue
-        remote_positions_raw[sym] = remote_positions_raw.get(sym, 0.0) + float(row.get("qty", 0.0))
-    exchange_positions = _normalize_positions(remote_positions_raw, qty_tolerance)
+    runtime_snapshot_positions = snapshot.get("runtime_snapshot", {}).get("positions", {})
+    if isinstance(runtime_snapshot_positions, dict) and runtime_snapshot_positions:
+        runtime_positions = runtime_snapshot_positions
+        exchange_positions = _normalize_runtime_snapshot_positions(runtime_snapshot_positions, qty_tolerance)
+    else:
+        runtime_positions = {"rows": snapshot.get("runtime_positions") or snapshot.get("positions", [])}
+        exchange_positions = _normalize_runtime_position_rows(runtime_positions['rows'], qty_tolerance)
 
     position_diffs: dict[str, float] = {}
     for sym in sorted(set(local_positions) | set(exchange_positions)):
@@ -108,6 +132,7 @@ def bootstrap_recover_and_reconcile(
         recovered_orders=len(om.list_orders()),
         recovered_working_orders=len(local_working),
         local_positions=local_positions,
+        runtime_positions=runtime_positions,
         exchange_positions=exchange_positions,
         position_diffs=position_diffs,
         local_working_order_ids=local_working,

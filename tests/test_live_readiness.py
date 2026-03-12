@@ -480,6 +480,31 @@ def test_live_execution_service_updates_runtime_snapshot_from_adapter_events():
     assert result['runtime_snapshot']['orders'][0]['status'] in {'acked', 'working', 'filled'}
 
 
+def test_bootstrap_recovery_prefers_runtime_ledger_snapshot(tmp_path):
+    from quantx.bootstrap import bootstrap_recover_and_reconcile
+    from quantx.exchanges.okx_perp import OKXPerpAdapter
+
+    class _BootstrapExchange(_DummyOKXPerpExchange):
+        def get_raw_open_orders(self, symbol: str | None = None) -> list[dict[str, object]]:
+            return []
+
+    store = JsonlOMSStore(str(tmp_path / 'oms' / 'events.jsonl'))
+    om = OrderManager(initial_cash=1000.0, store=store)
+    om.submit(OMSOrder(order_id='cid-1', symbol='BTC-USDT-SWAP', side='BUY', qty=0.25))
+    om.fill('cid-1', fill_qty=0.25, fill_price=100000.0)
+
+    svc = LiveExecutionService(
+        _BootstrapExchange(),
+        config=LiveExecutionConfig(dry_run=True),
+        runtime_adapter=OKXPerpAdapter(),
+    )
+
+    report = bootstrap_recover_and_reconcile(service=svc, oms_store=store, initial_cash=1000.0, symbol='BTC-USDT-SWAP')
+
+    assert 'runtime_positions' in report
+    assert report['ok'] is True
+
+
 def test_deploy_readiness_prefers_okx_before_binance():
     router = AlertRouter()
     router.register_webhook('ops', 'https://example.com/hook')
